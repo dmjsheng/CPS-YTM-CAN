@@ -1,0 +1,352 @@
+/*!
+@defgroup flexcan
+@ingroup mod_communication Controller Area Network with Flexible Data Rate (FlexCAN)
+@brief Hardware CAN / CAN-FD communication controller for the YTMicro SDK.
+
+@details
+The FlexCAN module implements a full CAN 2.0 B and CAN FD protocol engine.
+It provides hardware-based message filtering, flexible message buffers (MBs),
+an optional receive FIFO, and DMA-assisted transfer capability.
+
+@section flexcan_features Key Features
+- Full CAN 2.0 B and CAN FD protocol engine (ISO 11898-1 compliant).
+- Configurable message buffers — each independently set as Tx or Rx
+  (see @ref FEATURE_CAN_MAX_MB_NUM for the per-device maximum).
+- Standard (11-bit) and extended (29-bit) identifiers.
+- CAN FD payloads up to 64 bytes with bit-rate switching (BRS)
+  (see @ref FEATURE_CAN_HAS_FD for per-platform availability).
+- 6-message-deep Rx FIFO with up to 128/256/512 acceptance filters.
+- Enhanced Rx FIFO on supported devices
+  (see @ref FEATURE_CAN_HAS_ENHANCE_RX_FIFO).
+- DMA-assisted Rx FIFO readout on supported devices
+  (see @ref FEATURE_CAN_HAS_DMA_ENABLE).
+- Individual Rx mask register per message buffer.
+- Transmission abort capability.
+- Programmable bit timing and prescaler.
+- Selectable PE clock source (oscillator or peripheral clock)
+  (see @ref FEATURE_CAN_HAS_PE_CLKSRC_SELECT).
+- Pretended Networking wake-up in Stop mode
+  (see @ref FEATURE_CAN_HAS_PRETENDED_NETWORKING).
+- Self Wake-Up from Stop mode
+  (see @ref FEATURE_CAN_HAS_SELF_WAKE_UP).
+- Transceiver Delay Compensation (TDC) for CAN FD at higher data rates.
+- RAM ECC error detection and correction on supported devices
+  (see @ref FEATURE_CAN_HAS_RAM_ECC).
+- Listen-Only and Loop-Back diagnostic modes.
+
+@section flexcan_modes Supported Operation Modes
+
+| Mode                   | Enum Value              | Description                                                  |
+|------------------------|-------------------------|--------------------------------------------------------------|
+| Normal                 | FLEXCAN_NORMAL_MODE     | Standard transmit/receive operation.                         |
+| Listen-Only            | FLEXCAN_LISTEN_ONLY_MODE| Bus monitoring without acknowledgement or transmission.      |
+| Loopback               | FLEXCAN_LOOPBACK_MODE   | Internal loop-back for self-test (self reception enabled).   |
+| Freeze                 | FLEXCAN_FREEZE_MODE     | Module halted; registers accessible for configuration.       |
+| Disable                | FLEXCAN_DISABLE_MODE    | Module clock gated, lowest power consumption.                |
+
+@section flexcan_arch Module Architecture
+
+@verbatim
+┌──────────────────────────────────────────────────────┐
+│                  Application Code                    │
+│            (calls FLEXCAN_DRV_* functions)           │
+├──────────────────────────────────────────────────────┤
+│        FlexCAN Driver Layer (flexcan_driver.h/c)     │
+│  ● Instance-based API (FLEXCAN_DRV_Init, etc.)       │
+│  ● Uses instance index (0..N) to resolve base addr   │
+│  ● IRQ dispatch (flexcan_irq.h/c)                    │
+├──────────────────────────────────────────────────────┤
+│   FlexCAN HW Access Layer (flexcan_hw_access.h/c)    │
+│  ● Direct register-level access (inline + non-inline)│
+│  ● Mostly inline functions for performance           │
+├──────────────────────────────────────────────────────┤
+│            FlexCAN Peripheral Hardware               │
+│      (MCR, CTRL1/2, ESR1, MB RAM, RXIMR, etc.)       │
+└──────────────────────────────────────────────────────┘
+@endverbatim
+
+@subsection flexcan_arch_driver Driver Layer (flexcan_driver.h)
+Application code should **only** use the `FLEXCAN_DRV_*` functions from
+flexcan_driver.h. These functions accept a zero-based **instance** index
+and resolve the hardware base address internally.
+
+@subsection flexcan_arch_hw HW Access Layer (flexcan_hw_access.h)
+This internal layer provides low-level register accessors organized into
+functional groups:
+- **Module Enable & Mode Control** — FLEXCAN_Enable(), FLEXCAN_Disable(),
+  FLEXCAN_EnterFreezeMode(), FLEXCAN_ExitFreezeMode(), etc.
+- **Clock & Bit Timing** — FLEXCAN_SetTimeSegments(), FLEXCAN_GetTimeSegments(), etc.
+- **FD Configuration** — FLEXCAN_SetFDEnabled(), FLEXCAN_SetPayloadSize(), etc.
+- **Message Buffer Operations** — FLEXCAN_SetTxMsgBuff(), FLEXCAN_SetRxMsgBuff(), etc.
+- **Rx FIFO** — FLEXCAN_EnableRxFifo(), FLEXCAN_ReadRxFifo(), etc.
+- **Enhanced Rx FIFO** — FLEXCAN_EnableEnhanceRxFifo(), FLEXCAN_ReadEnhanceRxFifo(), etc.
+- **Interrupt & Status** — FLEXCAN_SetMsgBuffIntCmd(), FLEXCAN_SetErrIntCmd(), etc.
+- **Pretended Networking** — FLEXCAN_ConfigPN(), FLEXCAN_SetPN(), etc.
+
+@section flexcan_config Configuration Parameters
+
+@subsection flexcan_config_struct flexcan_user_config_t Fields
+| Field                              | Type                                 | Description                                                      |
+|------------------------------------|--------------------------------------|------------------------------------------------------------------|
+| max_num_mb                         | uint32_t                             | Maximum number of message buffers to use.                        |
+| num_id_filters                     | flexcan_rx_fifo_id_filter_num_t      | Number of Rx FIFO ID filters (when FIFO enabled).                |
+| is_rx_fifo_needed                  | bool                                 | Enable/disable the Rx FIFO feature.                              |
+| flexcanMode                        | flexcan_operation_modes_t            | Operation mode (Normal, Listen-Only, Loopback, Freeze, Disable). |
+| payload                            | flexcan_fd_payload_size_t            | Payload size (8 / 16 / 32 / 64 bytes; FD only for >8).          |
+| fd_enable                          | bool                                 | Enable/disable CAN FD support.                                   |
+| pe_clock                           | flexcan_clk_source_t                 | Protocol Engine clock source (oscillator or peripheral).         |
+| bitrate                            | flexcan_time_segment_t               | Bit timing for standard / arbitration phase.                     |
+| bitrate_cbt                        | flexcan_time_segment_t               | Bit timing for FD data phase.                                    |
+| transfer_type                      | flexcan_rx_fifo_transfer_type_t      | Rx FIFO transfer method (interrupt or DMA).                      |
+| rxFifoDMAChannel                   | uint8_t                              | DMA channel number for Rx FIFO DMA transfers.                    |
+
+@subsection flexcan_config_features Device Feature Macros
+| Macro                                  | Description                                                |
+|----------------------------------------|------------------------------------------------------------|
+| FEATURE_CAN_HAS_FD                     | Set to 1 if device supports CAN FD.                       |
+| FEATURE_CAN_HAS_PE_CLKSRC_SELECT      | Set to 1 if PE clock source is selectable.                 |
+| FEATURE_CAN_HAS_DMA_ENABLE            | Set to 1 if DMA is available for Rx FIFO.                  |
+| FEATURE_CAN_HAS_ENHANCE_RX_FIFO       | Set to 1 if Enhanced Rx FIFO is available.                 |
+| FEATURE_CAN_HAS_PRETENDED_NETWORKING   | Set to 1 if Pretended Networking is available.             |
+| FEATURE_CAN_HAS_SELF_WAKE_UP          | Set to 1 if Self Wake-Up feature is available.             |
+| FEATURE_CAN_HAS_RAM_ECC               | Set to 1 if RAM ECC detection/correction is available.     |
+| FEATURE_CAN_MAX_MB_NUM                 | Maximum number of message buffers on the device.           |
+
+@section flexcan_usage Usage Patterns
+
+@subsection flexcan_usage_basic Pattern 1: Basic Initialization and Send
+
+@code{.c}
+#define INST_CANCOM1 (0U)
+#define TX_MAILBOX   (1U)
+#define MSG_ID       (0x100U)
+
+flexcan_state_t canState;
+flexcan_user_config_t canConfig;
+
+// Step 1: Get default configuration (500 Kbit/s, 16 MBs, no FD, no FIFO)
+FLEXCAN_DRV_GetDefaultConfig(&canConfig);
+
+// Step 2: Initialize FlexCAN instance
+FLEXCAN_DRV_Init(INST_CANCOM1, &canState, &canConfig);
+
+// Step 3: Configure a Tx mailbox
+flexcan_data_info_t txInfo = {
+    .data_length = 8U,
+    .msg_id_type = FLEXCAN_MSG_ID_STD,
+    .is_remote   = false
+};
+FLEXCAN_DRV_ConfigTxMb(INST_CANCOM1, TX_MAILBOX, &txInfo, MSG_ID);
+
+// Step 4: Send data (blocking, 1000 ms timeout)
+uint8_t txData[8] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
+FLEXCAN_DRV_SendBlocking(INST_CANCOM1, TX_MAILBOX, &txInfo, MSG_ID, txData, 1000U);
+
+// Step 5: De-initialize when done
+FLEXCAN_DRV_Deinit(INST_CANCOM1);
+@endcode
+
+@subsection flexcan_usage_receive Pattern 2: Basic Receive (Non-Blocking)
+
+@code{.c}
+#define INST_CANCOM1 (0U)
+#define RX_MAILBOX   (2U)
+#define MSG_ID       (0x200U)
+
+flexcan_data_info_t rxInfo = {
+    .data_length = 8U,
+    .msg_id_type = FLEXCAN_MSG_ID_STD
+};
+
+// Configure Rx mailbox
+FLEXCAN_DRV_ConfigRxMb(INST_CANCOM1, RX_MAILBOX, &rxInfo, MSG_ID);
+
+// Start non-blocking receive
+flexcan_msgbuff_t recvBuff;
+FLEXCAN_DRV_Receive(INST_CANCOM1, RX_MAILBOX, &recvBuff);
+
+// Poll transfer status
+while (FLEXCAN_DRV_GetTransferStatus(INST_CANCOM1, RX_MAILBOX) == STATUS_BUSY);
+@endcode
+
+@subsection flexcan_usage_rxfifo Pattern 3: Rx FIFO Reception
+
+@code{.c}
+#define INST_CANCOM1 (0U)
+
+// ID Filter table (Format A)
+const flexcan_id_table_t filterTable[] = {
+    { .isExtendedFrame = false, .isRemoteFrame = false, .id = 1U },
+    { .isExtendedFrame = false, .isRemoteFrame = false, .id = 2U }
+};
+
+// Configure Rx FIFO filters
+FLEXCAN_DRV_ConfigRxFifo(INST_CANCOM1, FLEXCAN_RX_FIFO_ID_FORMAT_A, filterTable);
+
+// Blocking FIFO reception (1000 ms timeout)
+flexcan_msgbuff_t fifoBuff;
+status_t status = FLEXCAN_DRV_RxFifoBlocking(INST_CANCOM1, &fifoBuff, 1000U);
+@endcode
+
+@subsection flexcan_usage_callback Pattern 4: Callback-based Operation
+
+@code{.c}
+void myFlexcanCallback(uint8_t instance, flexcan_event_type_t eventType,
+                       uint32_t buffIdx, flexcan_state_t *state)
+{
+    if (eventType == FLEXCAN_EVENT_TX_COMPLETE) {
+        // Transmission complete
+    }
+    if (eventType == FLEXCAN_EVENT_RX_COMPLETE) {
+        // Reception complete — data in state->mbs[buffIdx].mb_message
+    }
+}
+
+// Install event callback
+FLEXCAN_DRV_InstallEventCallback(INST_CANCOM1, myFlexcanCallback, NULL);
+
+// Install error callback
+void myErrorCallback(uint8_t instance, flexcan_error_event_type_t errorType,
+                     flexcan_state_t *state)
+{
+    // Handle error events
+}
+FLEXCAN_DRV_InstallErrorCallback(INST_CANCOM1, myErrorCallback, NULL);
+@endcode
+
+@section flexcan_api API Quick Reference
+
+@subsection flexcan_api_init Initialization & De-initialization
+| Function                        | Description                                           |
+|---------------------------------|-------------------------------------------------------|
+| FLEXCAN_DRV_GetDefaultConfig()  | Fill configuration struct with device defaults.       |
+| FLEXCAN_DRV_Init()              | Initialize FlexCAN instance with user configuration.  |
+| FLEXCAN_DRV_Deinit()            | Shut down FlexCAN instance, disable interrupts.       |
+
+@subsection flexcan_api_bitrate Bit Rate Configuration
+| Function                        | Description                                           |
+|---------------------------------|-------------------------------------------------------|
+| FLEXCAN_DRV_SetBitrate()        | Set standard / arbitration phase bit timing.          |
+| FLEXCAN_DRV_SetBitrateCbt()     | Set CAN FD data phase bit timing.                     |
+| FLEXCAN_DRV_GetBitrate()        | Get current standard / arbitration phase bit timing.  |
+| FLEXCAN_DRV_GetBitrateFD()      | Get current CAN FD data phase bit timing.             |
+
+@subsection flexcan_api_mask Rx Mask Configuration
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_SetRxMaskType()           | Set Rx mask mode (global or individual).          |
+| FLEXCAN_DRV_SetRxFifoGlobalMask()     | Set Rx FIFO global acceptance mask.               |
+| FLEXCAN_DRV_SetRxMbGlobalMask()       | Set Rx MB global acceptance mask (std/ext).       |
+| FLEXCAN_DRV_SetRxMb14Mask()           | Set Rx MB 14 acceptance mask.                     |
+| FLEXCAN_DRV_SetRxMb15Mask()           | Set Rx MB 15 acceptance mask.                     |
+| FLEXCAN_DRV_SetRxIndividualMask()     | Set individual acceptance mask for a specific MB. |
+
+@subsection flexcan_api_tx Transmit Operations
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_ConfigTxMb()              | Configure a message buffer for transmission.      |
+| FLEXCAN_DRV_ConfigRemoteResponseMb()  | Configure a Tx MB for remote frame response.      |
+| FLEXCAN_DRV_SendBlocking()            | Send a CAN frame (blocking with timeout).         |
+| FLEXCAN_DRV_Send()                    | Send a CAN frame (non-blocking, callback-based).  |
+
+@subsection flexcan_api_rx Receive Operations
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_ConfigRxMb()              | Configure a message buffer for reception.         |
+| FLEXCAN_DRV_ConfigRxFifo()            | Configure Rx FIFO ID filter table.                |
+| FLEXCAN_DRV_ConfigEnhanceRxFifo()     | Configure Enhanced Rx FIFO filter table.          |
+| FLEXCAN_DRV_ReceiveBlocking()         | Receive via MB (blocking with timeout).           |
+| FLEXCAN_DRV_Receive()                 | Receive via MB (non-blocking, callback-based).    |
+| FLEXCAN_DRV_RxFifoBlocking()          | Receive via Rx FIFO (blocking with timeout).      |
+| FLEXCAN_DRV_RxFifo()                  | Receive via Rx FIFO (non-blocking).               |
+| FLEXCAN_DRV_EnhanceRxFifo()           | Receive via Enhanced Rx FIFO (non-blocking).      |
+
+@subsection flexcan_api_status Transfer Status & Error
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_AbortTransfer()           | Abort an ongoing transfer on a specific MB.       |
+| FLEXCAN_DRV_GetTransferStatus()       | Get the current transfer status of a MB.          |
+| FLEXCAN_DRV_GetErrorStatus()          | Read the ESR1 error/status register.              |
+
+@subsection flexcan_api_callback Callback & Interrupt
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_InstallEventCallback()    | Register a callback for Tx/Rx/FIFO events.        |
+| FLEXCAN_DRV_InstallErrorCallback()    | Register a callback for error events.             |
+
+@subsection flexcan_api_tdc Transceiver Delay Compensation
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_SetTDCOffset()            | Enable/disable TDC and set offset value.          |
+| FLEXCAN_DRV_GetTDCValue()             | Read the measured TDC value.                      |
+| FLEXCAN_DRV_GetTDCFail()              | Check if TDC measurement failed.                  |
+| FLEXCAN_DRV_ClearTDCFail()            | Clear the TDC fail flag.                          |
+
+@subsection flexcan_api_pn Pretended Networking
+| Function                              | Description                                       |
+|---------------------------------------|---------------------------------------------------|
+| FLEXCAN_DRV_ConfigPN()                | Configure and enable/disable Pretended Networking.|
+| FLEXCAN_DRV_GetWMB()                  | Read a wake-up message buffer after PN wake.      |
+
+@section flexcan_notes Important Notes
+
+@subsection flexcan_notes_clock Clock Dependency
+The FlexCAN peripheral clock must be configured via the @ref clock_manager
+**before** calling FLEXCAN_DRV_Init(). The driver does not manage clocks
+internally. Pin multiplexing must also be configured externally.
+
+@subsection flexcan_notes_fifo Rx FIFO Constraints
+- When Rx FIFO is enabled, MB 0 is reserved for FIFO output and cannot be
+  used for individual transmission.
+- The number of MBs consumed by the FIFO depends on the number of ID filters
+  configured.
+- DMA module must be initialized **prior to** FlexCAN Rx FIFO usage in DMA
+  mode; the DMA channel must be allocated by the application.
+
+@subsection flexcan_notes_blocking Blocking API Behavior
+- When FLEXCAN_DRV_ReceiveBlocking() or FLEXCAN_DRV_SendBlocking() is called
+  with timeout = 0 and the message is already in the mailbox, the function
+  reports timeout but the message may still have been transmitted/received.
+- Do **not** call blocking receive (FLEXCAN_DRV_ReceiveBlocking /
+  FLEXCAN_DRV_RxFifoBlocking) or FLEXCAN_DRV_AbortTransfer inside a callback
+  without first polling the previous operation status. This leads to
+  undefined behavior.
+
+@subsection flexcan_notes_alignment Memory Alignment
+For Cortex-M0 devices (YTM32B1LD0, YTM32B1LE0), transmission and reception
+buffers must be memory-aligned. The only exceptions are FLEXCAN_DRV_Send(),
+FLEXCAN_DRV_SendBlocking(), and FLEXCAN_DRV_ConfigRemoteResponseMb() with a
+payload length less than 3 bytes.
+
+@subsection flexcan_notes_pn Pretended Networking
+When using Pretended Networking in Stop mode, the CHI (interface) clock must
+be disabled and the PE clock source must remain enabled as configured in the
+CAN module. Ensure the CHI clock is re-enabled on wake-up to Run mode.
+
+@section flexcan_integration Integration Guide
+
+@subsection flexcan_integration_files Compilation Units
+The following source files must be added to the project build:
+@verbatim
+${SDK_PATH}/platform/drivers/src/flexcan/flexcan_driver.c
+${SDK_PATH}/platform/drivers/src/flexcan/flexcan_hw_access.c
+${SDK_PATH}/platform/drivers/src/flexcan/flexcan_irq.c
+@endverbatim
+
+@subsection flexcan_integration_include Include Paths
+Add the following directory to the toolchain include path:
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+@endverbatim
+
+@subsection flexcan_integration_symbols Compile Symbols
+No special compile-time symbols are required for this module. Device-specific
+feature macros (`FEATURE_CAN_*`) are automatically defined in the device
+features header.
+
+@subsection flexcan_integration_deps Dependencies
+- @ref clock_manager — Required for enabling the FlexCAN peripheral clock.
+- @ref interrupt_manager — Required for FlexCAN interrupt installation.
+- @ref dma_driver — Required when using Rx FIFO in DMA transfer mode.
+
+*/

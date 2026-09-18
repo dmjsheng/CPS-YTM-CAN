@@ -1,0 +1,397 @@
+/*!
+@defgroup i2c
+@ingroup mod_communication Low Power Inter-Integrated Circuit (I2C)
+@brief Hardware I2C bus controller supporting master and slave operation modes.
+
+@details
+The I2C module provides a low-power Inter-Integrated Circuit (I2C) controller
+that supports efficient communication on an I2C bus as a master and/or a slave.
+It is interrupt-driven and supports both blocking and non-blocking transfer APIs,
+with optional DMA acceleration for high-throughput applications.
+
+@section i2c_features Key Features
+- Master and slave operation on the same peripheral instance.
+- Interrupt-based transfer engine with blocking and non-blocking API variants.
+- 7-bit and 10-bit slave addressing.
+- Configurable baud rate with automatic prescaler calculation.
+- Supports multiple I2C speed modes (device-dependent):
+  - Standard-mode (Sm): up to 100 kbit/s
+  - Fast-mode (Fm): up to 400 kbit/s
+  - Fast-mode Plus (Fm+): up to 1 Mbit/s (if `I2C_HAS_FAST_PLUS_MODE`)
+  - High-speed mode (Hs): up to 3.4 Mbit/s (if `I2C_HAS_HIGH_SPEED_MODE`)
+  - Ultra-fast mode (UFm): up to 5 Mbit/s, unidirectional (if `I2C_HAS_ULTRA_FAST_MODE`)
+- Hardware FIFO for both transmit and receive paths.
+- DMA support for master and slave transfers (`I2C_USING_DMA`).
+- Slave always-listening mode with event-driven callbacks.
+- Slave on-demand mode for command-initiated transfers.
+- Repeated START condition support for chained master transfers.
+- Line-low timeout detection for bus error recovery.
+
+@section i2c_modes Supported Operating Modes
+
+| Mode             | Enum Value            | Max Speed     | Direction      | Condition Macro               |
+|------------------|-----------------------|---------------|----------------|-------------------------------|
+| Standard (Sm)    | I2C_STANDARD_MODE     | 100 kbit/s    | Bidirectional  | Always available              |
+| Fast (Fm)        | I2C_FAST_MODE         | 400 kbit/s    | Bidirectional  | Always available              |
+| Fast-plus (Fm+)  | I2C_FASTPLUS_MODE     | 1 Mbit/s      | Bidirectional  | `I2C_HAS_FAST_PLUS_MODE`     |
+| High-speed (Hs)  | I2C_HIGHSPEED_MODE    | 3.4 Mbit/s    | Bidirectional  | `I2C_HAS_HIGH_SPEED_MODE`    |
+| Ultra-fast (UFm) | I2C_ULTRAFAST_MODE    | 5 Mbit/s      | Unidirectional | `I2C_HAS_ULTRA_FAST_MODE`    |
+
+@section i2c_arch Module Architecture
+
+The I2C module is organized in a two-layer architecture:
+
+@verbatim
+┌──────────────────────────────────────────────────────┐
+│                  Application Code                    │
+│           (calls I2C_DRV_* functions)                │
+├──────────────────────────────────────────────────────┤
+│           I2C Driver Layer (i2c_driver.h/c)          │
+│  ● Instance-based API (I2C_DRV_MasterInit, etc.)     │
+│  ● Separate master / slave init and data paths       │
+│  ● Blocking and non-blocking transfer functions      │
+│  ● DMA and interrupt transfer modes                  │
+├──────────────────────────────────────────────────────┤
+│       I2C HW Access Layer (i2c_hw_access.h)          │
+│  ● Direct register-level access (inline functions)   │
+│  ● Master and slave control / status / data I/O      │
+│  ● Clock, FIFO, interrupt, and DMA configuration     │
+├──────────────────────────────────────────────────────┤
+│        I2C IRQ Routing Layer (i2c_irq.h/c)           │
+│  ● Maps hardware IRQ vectors to driver handlers      │
+│  ● Device-series specific (YTM32B1L/B1M/B1H)        │
+├──────────────────────────────────────────────────────┤
+│             I2C Peripheral Hardware                  │
+│   (MCTRL, MSTS, MDATA, SCTRL, SSTS, SDATA, etc.)   │
+└──────────────────────────────────────────────────────┘
+@endverbatim
+
+@subsection i2c_arch_driver Driver Layer (i2c_driver.h)
+Application code should **only** use the `I2C_DRV_*` functions from i2c_driver.h.
+These functions accept a zero-based **instance** index and resolve the hardware
+base address internally using `I2C_BASE_PTRS`. Master and slave modes are
+initialized independently and can coexist on different instances.
+
+@subsection i2c_arch_hw HW Access Layer (i2c_hw_access.h)
+This internal layer provides low-level inline register accessors. It is
+organized into functional groups for both master and slave sides:
+- **Master**: enable/reset, clock config, pin/NACK config, FIFO, data I/O,
+  status, interrupt, DMA, timeout
+- **Slave**: enable, address config, status, ACK/NACK control, clock stretching,
+  data I/O, interrupt, DMA, high-speed mode detection
+
+@section i2c_config Configuration Parameters
+
+@subsection i2c_config_master i2c_master_user_config_t Fields
+
+| Field           | Type                    | Description                                                       | Default Value          |
+|-----------------|-------------------------|-------------------------------------------------------------------|------------------------|
+| slaveAddress    | uint16_t                | Target slave address (7-bit or 10-bit).                           | 32                     |
+| is10bitAddr     | bool                    | If true, slaveAddress is interpreted as 10-bit.                   | false                  |
+| operatingMode   | i2c_mode_t              | I2C speed mode (Standard / Fast / etc.).                          | I2C_STANDARD_MODE      |
+| baudRate        | uint32_t                | Desired SCL frequency in Hz.                                      | 100000                 |
+| baudRateHS      | uint32_t                | High-speed SCL frequency (only if `I2C_HAS_HIGH_SPEED_MODE`).    | N/A                    |
+| masterCode      | uint8_t                 | Master code for Hs-mode (0-7, only if `I2C_HAS_HIGH_SPEED_MODE`).| N/A                    |
+| transferType    | i2c_transfer_type_t     | Transfer engine: I2C_USING_INTERRUPTS or I2C_USING_DMA.           | I2C_USING_INTERRUPTS   |
+| dmaChannel      | uint8_t                 | DMA channel number (ignored if not using DMA).                    | 0                      |
+| masterCallback  | i2c_master_callback_t   | Optional callback invoked from ISR at transfer end.               | NULL                   |
+| callbackParam   | void *                  | User parameter passed to masterCallback.                          | NULL                   |
+
+@subsection i2c_config_slave i2c_slave_user_config_t Fields
+
+| Field           | Type                    | Description                                                       | Default Value          |
+|-----------------|-------------------------|-------------------------------------------------------------------|------------------------|
+| slaveAddress    | uint16_t                | Own slave address (7-bit or 10-bit).                              | 32                     |
+| is10bitAddr     | bool                    | If true, slaveAddress is interpreted as 10-bit.                   | false                  |
+| operatingMode   | i2c_mode_t              | I2C speed mode.                                                   | I2C_STANDARD_MODE      |
+| slaveListening  | bool                    | If true, slave is always listening after init.                    | true                   |
+| transferType    | i2c_transfer_type_t     | Transfer engine: I2C_USING_INTERRUPTS or I2C_USING_DMA.           | I2C_USING_INTERRUPTS   |
+| dmaChannel      | uint8_t                 | DMA channel number (ignored if not using DMA).                    | 0                      |
+| slaveCallback   | i2c_slave_callback_t    | Callback for slave events (TX_REQ, RX_REQ, STOP, etc.).          | NULL                   |
+| callbackParam   | void *                  | User parameter passed to slaveCallback.                           | NULL                   |
+
+@section i2c_usage Usage Patterns
+
+@subsection i2c_usage_master_basic Pattern 1: Master Blocking Send and Receive
+
+The most common use case: initialize in master mode, send data to a slave,
+then receive a response using blocking calls.
+
+@code{.c}
+#define I2C_INST  (0U)
+
+i2c_master_state_t masterState;
+i2c_master_user_config_t masterConfig;
+uint8_t txData[] = { 0x00, 0x01, 0x02, 0x03 };
+uint8_t rxData[4];
+
+/* Step 1: Get default master configuration */
+I2C_DRV_MasterGetDefaultConfig(&masterConfig);
+masterConfig.slaveAddress = 0x50U;
+masterConfig.baudRate = 400000U;
+
+/* Step 2: Initialize I2C master */
+I2C_DRV_MasterInit(I2C_INST, &masterConfig, &masterState);
+
+/* Step 3: Send data (blocking, with STOP) */
+I2C_DRV_MasterSendDataBlocking(I2C_INST, txData, sizeof(txData), true, 100U);
+
+/* Step 4: Receive data (blocking, with STOP) */
+I2C_DRV_MasterReceiveDataBlocking(I2C_INST, rxData, sizeof(rxData), true, 100U);
+
+/* Step 5: De-initialize */
+I2C_DRV_MasterDeinit(I2C_INST);
+@endcode
+
+@subsection i2c_usage_master_nonblocking Pattern 2: Master Non-Blocking Transfer
+
+Start a transfer and poll for completion, or use a callback for notification.
+
+@code{.c}
+#define I2C_INST  (0U)
+
+i2c_master_state_t masterState;
+i2c_master_user_config_t masterConfig;
+uint8_t txData[] = { 0xAA, 0xBB };
+uint32_t bytesRemaining;
+
+I2C_DRV_MasterGetDefaultConfig(&masterConfig);
+masterConfig.slaveAddress = 0x50U;
+I2C_DRV_MasterInit(I2C_INST, &masterConfig, &masterState);
+
+/* Start non-blocking send */
+I2C_DRV_MasterSendData(I2C_INST, txData, sizeof(txData), true);
+
+/* Poll for completion */
+while (I2C_DRV_MasterGetTransferStatus(I2C_INST, &bytesRemaining) == STATUS_BUSY)
+{
+    /* Optionally do other work */
+}
+
+I2C_DRV_MasterDeinit(I2C_INST);
+@endcode
+
+@subsection i2c_usage_master_chained Pattern 3: Master Chained Transfers (Repeated START)
+
+Use the `sendStop` parameter to keep the bus active for a register-read
+operation (write register address, then read data).
+
+@code{.c}
+#define I2C_INST  (0U)
+
+i2c_master_state_t masterState;
+i2c_master_user_config_t masterConfig;
+uint8_t regAddr = 0x10U;
+uint8_t rxData[2];
+
+I2C_DRV_MasterGetDefaultConfig(&masterConfig);
+masterConfig.slaveAddress = 0x50U;
+I2C_DRV_MasterInit(I2C_INST, &masterConfig, &masterState);
+
+/* Send register address WITHOUT stop (sendStop = false) */
+I2C_DRV_MasterSendDataBlocking(I2C_INST, &regAddr, 1U, false, 100U);
+
+/* Read data WITH stop (sendStop = true) — repeated START is generated */
+I2C_DRV_MasterReceiveDataBlocking(I2C_INST, rxData, sizeof(rxData), true, 100U);
+
+I2C_DRV_MasterDeinit(I2C_INST);
+@endcode
+
+@warning When `sendStop` is set to false, the master holds the SCL line low
+after the transfer. The application **must** follow up with another transfer
+(with `sendStop = true`) to release the bus. Failure to do so will block
+the entire I2C bus indefinitely.
+
+@subsection i2c_usage_slave_listening Pattern 4: Slave Always-Listening Mode
+
+In this mode, the slave is armed at initialization and responds to master
+requests via the callback function.
+
+@code{.c}
+#define I2C_INST  (0U)
+
+i2c_slave_state_t slaveState;
+i2c_slave_user_config_t slaveConfig;
+uint8_t slaveTxData[4] = { 0x10, 0x20, 0x30, 0x40 };
+uint8_t slaveRxData[4];
+
+void slaveCallback(i2c_slave_event_t event, void *param)
+{
+    (void)param;
+    switch (event)
+    {
+        case I2C_SLAVE_EVENT_TX_REQ:
+            I2C_DRV_SlaveSetTxBuffer(I2C_INST, slaveTxData, sizeof(slaveTxData));
+            break;
+        case I2C_SLAVE_EVENT_RX_REQ:
+            I2C_DRV_SlaveSetRxBuffer(I2C_INST, slaveRxData, sizeof(slaveRxData));
+            break;
+        case I2C_SLAVE_EVENT_STOP:
+            /* Transfer complete */
+            break;
+        default:
+            break;
+    }
+}
+
+/* Initialize slave in listening mode */
+I2C_DRV_SlaveGetDefaultConfig(&slaveConfig);
+slaveConfig.slaveAddress = 0x50U;
+slaveConfig.slaveListening = true;
+slaveConfig.slaveCallback = slaveCallback;
+I2C_DRV_SlaveInit(I2C_INST, &slaveConfig, &slaveState);
+
+/* Slave is now actively listening — no further action needed */
+@endcode
+
+@subsection i2c_usage_slave_ondemand Pattern 5: Slave On-Demand Mode
+
+In this mode, the slave is commanded to transmit or receive through explicit
+API calls. The actual moment of data exchange depends on the I2C master.
+
+@code{.c}
+#define I2C_INST  (0U)
+
+i2c_slave_state_t slaveState;
+i2c_slave_user_config_t slaveConfig;
+uint8_t rxData[8];
+
+I2C_DRV_SlaveGetDefaultConfig(&slaveConfig);
+slaveConfig.slaveAddress = 0x50U;
+slaveConfig.slaveListening = false;
+I2C_DRV_SlaveInit(I2C_INST, &slaveConfig, &slaveState);
+
+/* Block until the master sends data to this slave */
+I2C_DRV_SlaveReceiveDataBlocking(I2C_INST, rxData, sizeof(rxData), 5000U);
+
+I2C_DRV_SlaveDeinit(I2C_INST);
+@endcode
+
+@section i2c_api API Quick Reference
+
+@subsection i2c_api_master_init Master Initialization & De-initialization
+| Function                          | Description                                              |
+|-----------------------------------|----------------------------------------------------------|
+| I2C_DRV_MasterInit()              | Initialize I2C master with user configuration.           |
+| I2C_DRV_MasterDeinit()            | De-initialize I2C master, release resources.             |
+| I2C_DRV_MasterGetDefaultConfig()  | Fill master config struct with default values.           |
+
+@subsection i2c_api_master_config Master Configuration
+| Function                          | Description                                              |
+|-----------------------------------|----------------------------------------------------------|
+| I2C_DRV_MasterSetBaudRate()       | Set SCL frequency and operating mode at runtime.         |
+| I2C_DRV_MasterGetBaudRate()       | Read the currently configured SCL frequency.             |
+| I2C_DRV_MasterSetSlaveAddr()      | Change the target slave address at runtime.              |
+
+@subsection i2c_api_master_xfer Master Data Transfer
+| Function                              | Description                                          |
+|---------------------------------------|------------------------------------------------------|
+| I2C_DRV_MasterSendData()              | Start non-blocking transmit to slave.                |
+| I2C_DRV_MasterSendDataBlocking()      | Blocking transmit to slave with timeout.             |
+| I2C_DRV_MasterReceiveData()           | Start non-blocking receive from slave.               |
+| I2C_DRV_MasterReceiveDataBlocking()   | Blocking receive from slave with timeout.            |
+
+@subsection i2c_api_master_ctrl Master Transfer Control
+| Function                              | Description                                          |
+|---------------------------------------|------------------------------------------------------|
+| I2C_DRV_MasterAbortTransferData()     | Abort an in-progress non-blocking transfer.          |
+| I2C_DRV_MasterGetTransferStatus()     | Check transfer status and remaining bytes.           |
+
+@subsection i2c_api_slave_init Slave Initialization & De-initialization
+| Function                          | Description                                              |
+|-----------------------------------|----------------------------------------------------------|
+| I2C_DRV_SlaveInit()               | Initialize I2C slave with user configuration.            |
+| I2C_DRV_SlaveDeinit()             | De-initialize I2C slave, release resources.              |
+| I2C_DRV_SlaveGetDefaultConfig()   | Fill slave config struct with default values.            |
+
+@subsection i2c_api_slave_buf Slave Buffer Management
+| Function                          | Description                                              |
+|-----------------------------------|----------------------------------------------------------|
+| I2C_DRV_SlaveSetTxBuffer()        | Provide transmit buffer (used in listening mode).        |
+| I2C_DRV_SlaveSetRxBuffer()        | Provide receive buffer (used in listening mode).         |
+
+@subsection i2c_api_slave_xfer Slave Data Transfer
+| Function                              | Description                                          |
+|---------------------------------------|------------------------------------------------------|
+| I2C_DRV_SlaveSendData()               | Start non-blocking slave transmit (on-demand mode).  |
+| I2C_DRV_SlaveSendDataBlocking()       | Blocking slave transmit with timeout.                |
+| I2C_DRV_SlaveReceiveData()            | Start non-blocking slave receive (on-demand mode).   |
+| I2C_DRV_SlaveReceiveDataBlocking()    | Blocking slave receive with timeout.                 |
+
+@subsection i2c_api_slave_ctrl Slave Transfer Control
+| Function                              | Description                                          |
+|---------------------------------------|------------------------------------------------------|
+| I2C_DRV_SlaveAbortTransferData()      | Abort an in-progress slave transfer.                 |
+| I2C_DRV_SlaveGetTransferStatus()      | Check slave transfer status and remaining bytes.     |
+
+@section i2c_notes Important Notes
+
+@subsection i2c_notes_clock Clock & Pin Dependencies
+- The I2C protocol clock must be enabled via the @ref clock_manager **before**
+  calling I2C_DRV_MasterInit(). The driver does not manage clocks internally.
+- I2C pins must be routed to the I2C module via the PORT configuration before
+  use. Refer to the pin routing HAL for pin mux settings.
+
+@subsection i2c_notes_irq Interrupt Configuration
+- The driver enables the I2C module interrupts internally, but interrupt
+  **priority** configuration must be done by the application via the
+  @ref interrupt_manager.
+
+@subsection i2c_notes_baudrate Baud Rate Accuracy
+@warning Due to hardware prescaler limitations, the actual baud rate may differ
+from the requested value. Always call I2C_DRV_MasterGetBaudRate() after
+I2C_DRV_MasterSetBaudRate() to verify the actual frequency configured.
+
+@subsection i2c_notes_sendstop Repeated START and sendStop
+@warning When using `sendStop = false` in a master transfer, the bus is not
+released after the transfer. The application **must** follow with another
+transfer that has `sendStop = true`. Failing to do so will hold SCL low
+indefinitely, blocking the entire I2C bus.
+
+@subsection i2c_notes_abort Abort Limitations
+@warning Aborting a master reception with I2C_DRV_MasterAbortTransferData()
+is **not supported** due to hardware behavior — the module will continue a
+started reception even if the FIFO is reset.
+@warning When aborting a master transmission, the user must ensure that the
+address byte has already been sent before calling the abort function.
+
+@subsection i2c_notes_listening Listening Mode Timing
+- In always-listening mode (`slaveListening = true`), I2C_DRV_SlaveInit()
+  must be called **before** the master begins the transfer.
+- In on-demand mode (`slaveListening = false`), both the init function and
+  the corresponding send/receive function must be called before the master
+  starts the transfer on the bus.
+
+@subsection i2c_notes_unsupported Unsupported Features
+- Fast-plus, High-speed, and Ultra-fast modes may not be available on all
+  devices. Check `I2C_HAS_FAST_PLUS_MODE`, `I2C_HAS_HIGH_SPEED_MODE`, and
+  `I2C_HAS_ULTRA_FAST_MODE` macros for device support.
+
+@section i2c_integration Integration Guide
+
+@subsection i2c_integration_files Compilation Units
+The following source files must be added to the project build:
+@verbatim
+${SDK_PATH}/platform/drivers/src/i2c/i2c_driver.c
+${SDK_PATH}/platform/drivers/src/i2c/i2c_irq.c
+@endverbatim
+
+@subsection i2c_integration_include Include Paths
+Add the following directories to the toolchain include path:
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+${SDK_PATH}/platform/drivers/src/i2c/
+@endverbatim
+
+@subsection i2c_integration_symbols Compile Symbols
+No special compile-time symbols are required for this module. Device-specific
+feature macros (`I2C_HAS_*`) are automatically defined in the device feature
+headers.
+
+@subsection i2c_integration_deps Dependencies
+- @ref clock_manager — Required for enabling the I2C peripheral clock.
+- @ref osif — Required for semaphore-based blocking transfers.
+- @ref interrupt_manager — Required for enabling/disabling I2C interrupts.
+- @ref dma_driver — Required when using DMA transfer mode.
+
+*/

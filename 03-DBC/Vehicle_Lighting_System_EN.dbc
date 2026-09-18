@@ -1,0 +1,78 @@
+VERSION ""
+
+NS_ : 
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    BA_DEF_DEF_
+    EV_DATA_
+    ENVVAR_DATA_
+    SGTYPE_
+    SGTYPE_VAL_
+    BA_DEF_SGTYPE_
+    BA_SGTYPE_
+    SIG_TYPE_REF_
+    VAL_TABLE_
+    SIG_GROUP_
+    SIG_VALTYPE_
+    SIGTYPE_VALTYPE_
+    BO_TX_BU_
+    BA_DEF_REL_
+    BA_REL_
+    BA_DEF_DEF_REL_
+    BU_SG_REL_
+    BU_EV_REL_
+    BU_BO_REL_
+    SG_MUL_VAL_
+
+BS_:
+
+BU_: BCM Left_Lamp Right_Lamp
+
+BO_ 256 BCM_Lamp_Cmd: 8 BCM
+ SG_ TurnLight_Cmd : 0|2@1+ (1,0) [0|3] "" Left_Lamp,Right_Lamp
+ SG_ PosLight_Cmd : 2|1@1+ (1,0) [0|1] "" Left_Lamp,Right_Lamp
+ SG_ Rolling_Counter : 4|4@1+ (1,0) [0|15] "" Left_Lamp,Right_Lamp
+
+BO_ 513 LeftLamp_Status: 8 Left_Lamp
+ SG_ Left_Turn_Status : 0|2@1+ (1,0) [0|3] "" BCM
+ SG_ Left_Pos_Status : 2|1@1+ (1,0) [0|1] "" BCM
+ SG_ Left_Active_Lamp : 3|2@1+ (1,0) [0|3] "" BCM
+ SG_ Left_Rolling_Counter : 8|4@1+ (1,0) [0|15] "" BCM
+
+BO_ 514 RightLamp_Status: 8 Right_Lamp
+ SG_ Right_Turn_Status : 0|2@1+ (1,0) [0|3] "" BCM
+ SG_ Right_Pos_Status : 2|1@1+ (1,0) [0|1] "" BCM
+ SG_ Right_Active_Lamp : 3|2@1+ (1,0) [0|3] "" BCM
+ SG_ Right_Rolling_Counter : 8|4@1+ (1,0) [0|15] "" BCM
+
+CM_ BO_ 256 "BCM Lighting Master Control Command";
+CM_ SG_ 256 TurnLight_Cmd "Turn Signal: 0-OFF, 1-Left, 2-Right, 3-Hazard";
+CM_ SG_ 256 PosLight_Cmd "Position Light: 0-OFF, 1-ON";
+CM_ SG_ 256 Rolling_Counter "0~15 Rolling Alive Counter";
+
+CM_ BO_ 513 "CPS32K214 Left Lamp Status Feedback";
+CM_ SG_ 513 Left_Turn_Status "Left Turn Light Status: 0-OFF, 1-ON, 2-BLINK_OFF, 3-FAULT";
+CM_ SG_ 513 Left_Pos_Status "Left Position Light: 0-OFF, 1-ON";
+CM_ SG_ 513 Left_Active_Lamp "Active Lamp: 0-NONE, 1-POS_LIGHT, 2-TURN_LIGHT";
+CM_ SG_ 513 Left_Rolling_Counter "Left Lamp Rolling Counter";
+
+CM_ BO_ 514 "YunTu YTM32 Right Lamp Status Feedback";
+CM_ SG_ 514 Right_Turn_Status "Right Turn Light Status: 0-OFF, 1-ON, 2-BLINK_OFF, 3-FAULT";
+CM_ SG_ 514 Right_Pos_Status "Right Position Light: 0-OFF, 1-ON";
+CM_ SG_ 514 Right_Active_Lamp "Active Lamp: 0-NONE, 1-POS_LIGHT, 2-TURN_LIGHT";
+CM_ SG_ 514 Right_Rolling_Counter "Right Lamp Rolling Counter";
+
+VAL_ 256 TurnLight_Cmd 0 "OFF" 1 "Left_Turn" 2 "Right_Turn" 3 "Hazard_Flashing" ;
+VAL_ 256 PosLight_Cmd 0 "OFF" 1 "ON" ;
+VAL_ 513 Left_Turn_Status 0 "OFF" 1 "BLINK_ON" 2 "BLINK_OFF" 3 "FAULT" ;
+VAL_ 513 Left_Pos_Status 0 "OFF" 1 "ON" ;
+VAL_ 513 Left_Active_Lamp 0 "NONE" 1 "POS_LIGHT" 2 "TURN_LIGHT" 3 "BOTH" ;
+VAL_ 514 Right_Turn_Status 0 "OFF" 1 "BLINK_ON" 2 "BLINK_OFF" 3 "FAULT" ;
+VAL_ 514 Right_Pos_Status 0 "OFF" 1 "ON" ;
+VAL_ 514 Right_Active_Lamp 0 "NONE" 1 "POS_LIGHT" 2 "TURN_LIGHT" 3 "BOTH" ;

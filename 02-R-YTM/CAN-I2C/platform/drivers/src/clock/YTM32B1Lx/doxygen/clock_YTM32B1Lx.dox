@@ -1,0 +1,110 @@
+/*!
+@defgroup clock_manager_YTM32B1Lx Clock Manager YTM32B1Lx
+@brief Device-specific clock implementation for the YTM32B1Lx series.
+@ingroup clock_manager
+
+@details
+This sub-module implements the Clock Manager for the YTM32B1Lx device family.
+It configures the SCU (System Clock Unit), the IPC (Inter-Peripheral Crossbar)
+peripheral clock gates, and the CMU (Clock Monitor Unit) using the hardware
+register accessors provided by scu_hw_access.h, ipc_hw_access.h,
+cmu_hw_access.h, and cfmu_hw_access.h.
+
+@section clock_b1lx_sources Clock Sources
+
+| Clock Source | Typical Frequency | Description                                |
+|--------------|-------------------|--------------------------------------------|
+| FIRC         | 48 MHz            | Fast Internal RC oscillator.               |
+| SIRC         | 8 MHz             | Slow Internal RC oscillator (low-power fallback). |
+| FXOSC        | 4 – 40 MHz        | Fast External Crystal / Clock oscillator.  |
+| SXOSC        | 32.768 kHz        | Slow External Crystal (if FEATURE_SCU_SUPPORT_SXOSC). |
+| LPO          | 128 kHz           | Low Power Oscillator (if FEATURE_SCU_SUPPORT_LPO). |
+
+@section clock_b1lx_tree Clock Distribution Tree
+
+@verbatim
+              ┌─────────┐
+              │  FXOSC   │
+              └─────────┘
+              ┌─────────┐
+              │  FIRC    │
+              └─────────┘
+              ┌─────────┐
+              │  SIRC    │
+              └─────────┘
+                   │
+                   ▼
+              ┌──────────────────────────────┐
+              │   System Clock MUX (SCU)     │
+              │    (FIRC / FXOSC / SIRC)     │
+              └──────────┬───────────────────┘
+                         │
+                    ┌────┴────┐
+                    │ SYS DIV │  ÷1..÷16
+                    └────┬────┘
+                         │
+                    Core Clock (CORE_CLK)
+                         │
+                    ┌────┴────┐
+                    │ FB DIV  │  ÷1..÷16
+                    └────┬────┘
+                         │
+                   Fast Bus Clock
+                         │
+                    ┌────┴────┐
+                    │ SB DIV  │  ÷1..÷16
+                    └────┬────┘
+                         │
+                   Slow Bus Clock
+
+              ┌─────────────────────────────────┐
+              │  IPC Peripheral Clock Control   │
+              │  Per-peripheral: gate + src + div│
+              └─────────────────────────────────┘
+@endverbatim
+
+@note The YTM32B1Lx series typically does not include PLL. System clock
+sources are limited to FIRC, FXOSC, and SIRC.
+
+@section clock_b1lx_usage Usage Example
+
+@code{.c}
+const clock_user_config_t *g_clockConfigs[] = { &clockConfig_RUN };
+
+CLOCK_SYS_Init(g_clockConfigs, 1U, NULL, 0U);
+CLOCK_SYS_UpdateConfiguration(0U, CLOCK_MANAGER_POLICY_FORCIBLE);
+
+uint32_t coreFreq;
+CLOCK_DRV_GetFreq(CORE_CLK, &coreFreq);
+@endcode
+
+@section clock_b1lx_notes Notes
+
+@warning The driver switches to SIRC before reconfiguring oscillators.
+Ensure SIRC is always available.
+
+@note CMU is enabled by default with ±25% tolerance. Define `CMU_DEFAULT_OFF`
+to disable automatic CMU configuration.
+
+@section clock_b1lx_integration Integration Guide
+
+@subsection clock_b1lx_integration_files Compilation Units
+@verbatim
+${SDK_PATH}/platform/drivers/src/clock/YTM32B1Lx/clock_YTM32B1Lx.c
+@endverbatim
+
+@subsection clock_b1lx_integration_include Include Paths
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+${SDK_PATH}/platform/drivers/src/clock/
+${SDK_PATH}/platform/drivers/src/clock/YTM32B1Lx/
+@endverbatim
+
+@subsection clock_b1lx_integration_symbols Compile Symbols
+No special symbols are required. Device-specific feature macros are defined
+in the device features header.
+
+@subsection clock_b1lx_integration_deps Dependencies
+- @ref interrupt_manager
+
+*/

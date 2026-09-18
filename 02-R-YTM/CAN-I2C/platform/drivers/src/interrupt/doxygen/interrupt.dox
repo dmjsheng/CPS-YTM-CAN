@@ -1,0 +1,260 @@
+/*!
+@defgroup interrupt_manager
+@ingroup mod_system Interrupt Manager
+@brief NVIC control and vector-table management module for the YTMicro SDK.
+
+@details
+The Interrupt Manager module wraps the core interrupt services provided by the
+ARM Cortex-M NVIC and the device startup code. It gives application code a
+uniform way to install RAM-based handlers, enable or disable IRQ lines,
+protect critical sections with nested global masking, program interrupt
+priorities, and access optional pending or active-state helpers when those
+features exist on the selected device.
+
+@section interrupt_features Key Features
+- Direct control of individual IRQ lines through `INT_SYS_EnableIRQ()` and
+  `INT_SYS_DisableIRQ()`.
+- Nested global interrupt masking used by `SDK_ENTER_CRITICAL()` and
+  `SDK_EXIT_CRITICAL()`.
+- Runtime ISR installation into a writable vector table through
+  `INT_SYS_InstallHandler()`.
+- Priority management for supported interrupt sources through
+  `INT_SYS_SetPriority()` and `INT_SYS_GetPriority()`.
+- Optional pending-state access when `FEATURE_INTERRUPT_HAS_PENDING_STATE`
+  is enabled.
+- Optional active-state queries when `FEATURE_INTERRUPT_HAS_ACTIVE_STATE`
+  is enabled.
+- Optional software-trigger and multi-core routing APIs on devices that
+  expose those capabilities.
+
+@section interrupt_modes Supported Operations
+
+| Operation Category        | Primary APIs | Notes |
+|---------------------------|--------------|-------|
+| Handler installation      | `INT_SYS_InstallHandler()` | Requires the vector table to reside in writable memory. |
+| IRQ line control          | `INT_SYS_EnableIRQ()`, `INT_SYS_DisableIRQ()` | Applies to the `IRQn_Type` value passed by the caller. |
+| Global IRQ control        | `INT_SYS_DisableIRQGlobal()`, `INT_SYS_EnableIRQGlobal()` | Uses a nested disable counter so critical sections can be paired safely. |
+| Priority control          | `INT_SYS_SetPriority()`, `INT_SYS_GetPriority()` | Availability depends on the IRQ or exception type supported by the core. |
+| Pending-state control     | `INT_SYS_ClearPending()`, `INT_SYS_SetPending()`, `INT_SYS_GetPending()` | Available only when `FEATURE_INTERRUPT_HAS_PENDING_STATE == 1`. |
+| Active-state query        | `INT_SYS_GetActive()` | Available only when `FEATURE_INTERRUPT_HAS_ACTIVE_STATE == 1`. |
+| Software IRQ control      | `INT_SYS_SetSoftwareIRQRequest()`, `INT_SYS_ClearSoftwareIRQRequest()` | Available only when `FEATURE_INTERRUPT_HAS_SOFTWARE_IRQ == 1`. |
+| Multi-core IRQ routing    | `INT_SYS_EnableIRQ_MC()`, `INT_SYS_DisableIRQ_MC()` | Available only when `FEATURE_INTERRUPT_MULTICORE_SUPPORT == 1`. |
+
+@section interrupt_arch Module Architecture
+
+The Interrupt Manager module is organized as a thin system-service layer over
+the CMSIS core API and the vector table provided by the startup code:
+
+@verbatim
+┌──────────────────────────────────────────────┐
+│              Application Code                │
+│       (calls INT_SYS_* and SDK_* macros)    │
+├──────────────────────────────────────────────┤
+│     Interrupt Manager (interrupt_manager)    │
+│  ● Vector-table handler installation         │
+│  ● IRQ enable/disable and priority control   │
+│  ● Nested global interrupt masking           │
+│  ● Optional pending/active feature helpers   │
+├──────────────────────────────────────────────┤
+│           CMSIS Core / NVIC API              │
+│  ● NVIC_EnableIRQ / NVIC_DisableIRQ          │
+│  ● NVIC_SetPriority / NVIC_GetPriority       │
+│  ● __disable_irq / __enable_irq              │
+├──────────────────────────────────────────────┤
+│        Startup Vector Table + Core HW        │
+│  ● SCB->VTOR points to the active vectors    │
+│  ● Vector entries 0..15 are core handlers    │
+│  ● External IRQ 0 starts at vector index 16  │
+└──────────────────────────────────────────────┘
+@endverbatim
+
+@subsection interrupt_arch_public Public Interface
+Application code includes `interrupt_manager.h` and uses the `INT_SYS_*`
+functions together with the `SDK_ENTER_CRITICAL()` and `SDK_EXIT_CRITICAL()`
+macros. There is no separate peripheral instance layer because the module
+targets the core interrupt controller directly.
+
+@section interrupt_config Configuration Parameters
+
+@subsection interrupt_config_inputs Key Types and Macros
+| Item                   | Type / Macro | Description |
+|------------------------|--------------|-------------|
+| IRQ identifier         | `IRQn_Type`  | Device-defined interrupt number passed to the Interrupt Manager APIs. |
+| ISR function pointer   | `isr_t`      | Handler type used when installing vector-table entries. |
+| Enter critical section | `SDK_ENTER_CRITICAL()` | Disables global interrupts and increments the nested disable count. |
+| Exit critical section  | `SDK_EXIT_CRITICAL()`  | Releases one nesting level and re-enables global interrupts when the count reaches zero. |
+
+@subsection interrupt_config_features Device Feature Macros
+| Macro                                 | Description |
+|---------------------------------------|-------------|
+| `FEATURE_INTERRUPT_IRQ_MIN`           | Lowest supported `IRQn_Type` value accepted by the module. |
+| `FEATURE_INTERRUPT_IRQ_MAX`           | Highest supported `IRQn_Type` value accepted by the module. |
+| `FEATURE_INTERRUPT_HAS_PENDING_STATE` | Enables the pending-state helper APIs. |
+| `FEATURE_INTERRUPT_HAS_ACTIVE_STATE`  | Enables the active-state query API. |
+| `FEATURE_INTERRUPT_HAS_SOFTWARE_IRQ`  | Enables the software-trigger helper APIs. |
+| `FEATURE_INTERRUPT_MULTICORE_SUPPORT` | Enables the multi-core IRQ routing APIs. |
+| `__NO_VECTOR_TABLE_COPY`              | When defined, RAM-based handler installation is not allowed. |
+
+@section interrupt_usage Usage Patterns
+
+@subsection interrupt_usage_basic Pattern 1: Enable and Disable a Peripheral IRQ
+Use the IRQ identifier defined by the device header to gate one interrupt line:
+
+@code{.c}
+#include "interrupt_manager.h"
+
+INT_SYS_EnableIRQ(ADC0_IRQn);
+
+/* ... peripheral interrupt handling is now allowed ... */
+
+INT_SYS_DisableIRQ(ADC0_IRQn);
+@endcode
+
+@subsection interrupt_usage_critical Pattern 2: Protect a Critical Section
+Use the SDK helper macros to mask global interrupts while a shared resource is
+updated. The nested counter allows the calls to be balanced safely.
+
+@code{.c}
+#include "interrupt_manager.h"
+
+SDK_ENTER_CRITICAL();
+
+/* Update data shared with one or more interrupt handlers. */
+
+SDK_EXIT_CRITICAL();
+@endcode
+
+@subsection interrupt_usage_handler Pattern 3: Install a RAM-Based Handler
+When the vector table has been copied to writable memory, the application can
+replace an ISR entry at runtime and optionally keep the previous handler:
+
+@code{.c}
+#include "interrupt_manager.h"
+
+static isr_t s_oldHandler;
+
+void MyUartHandler(void)
+{
+    /* Service the UART interrupt. */
+}
+
+INT_SYS_InstallHandler(UART0_IRQn, MyUartHandler, &s_oldHandler);
+INT_SYS_EnableIRQ(UART0_IRQn);
+@endcode
+
+@subsection interrupt_usage_pending Pattern 4: Manage a Pending Interrupt
+On devices that expose pending-state access, the module can set, clear, or
+read the pending bit of an IRQ line.
+
+@code{.c}
+#include "interrupt_manager.h"
+
+#if FEATURE_INTERRUPT_HAS_PENDING_STATE
+INT_SYS_SetPending(GPIOA_IRQn);
+
+if (INT_SYS_GetPending(GPIOA_IRQn) != 0U)
+{
+    INT_SYS_ClearPending(GPIOA_IRQn);
+}
+#endif
+@endcode
+
+@section interrupt_api API Quick Reference
+
+@subsection interrupt_api_install Handler Installation
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_InstallHandler()` | Install a handler into the writable vector table and optionally return the previous entry. |
+
+@subsection interrupt_api_irq IRQ Line Control
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_EnableIRQ()` | Enable one IRQ line in the NVIC. |
+| `INT_SYS_DisableIRQ()` | Disable one IRQ line in the NVIC. |
+
+@subsection interrupt_api_global Global IRQ Control
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_EnableIRQGlobal()` | Release one level of nested global interrupt masking. |
+| `INT_SYS_DisableIRQGlobal()` | Disable global interrupts and increment the nested mask counter. |
+
+@subsection interrupt_api_priority Priority Control
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_SetPriority()` | Program the priority of the selected IRQ or exception when supported. |
+| `INT_SYS_GetPriority()` | Read back the priority of the selected IRQ or exception when supported. |
+
+@subsection interrupt_api_pending Pending-State Control
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_ClearPending()` | Clear the pending state of the selected IRQ. |
+| `INT_SYS_SetPending()` | Force the selected IRQ into the pending state. |
+| `INT_SYS_GetPending()` | Read the pending state of the selected IRQ. |
+
+@subsection interrupt_api_active Active-State Query
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_GetActive()` | Report whether the selected IRQ is active. |
+
+@subsection interrupt_api_software Software IRQ Control
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_SetSoftwareIRQRequest()` | Trigger a software-settable IRQ request. |
+| `INT_SYS_ClearSoftwareIRQRequest()` | Clear a software-settable IRQ request. |
+
+@subsection interrupt_api_multicore Multi-Core IRQ Routing
+| Function | Description |
+|----------|-------------|
+| `INT_SYS_EnableIRQ_MC()` | Enable one IRQ line on the selected cores. |
+| `INT_SYS_GetCoresForIRQ()` | Query which cores currently enable one IRQ line. |
+| `INT_SYS_DisableIRQ_MC()` | Disable one IRQ line on the selected cores. |
+| `INT_SYS_DisableIRQ_MC_All()` | Disable one IRQ line on all supported cores. |
+
+@section interrupt_notes Important Notes
+
+@subsection interrupt_notes_vector Writable Vector Table Requirement
+`INT_SYS_InstallHandler()` only works when `SCB->VTOR` points to a writable
+vector table in RAM. If `__NO_VECTOR_TABLE_COPY` is defined, the application
+must keep the desired handlers in the device startup file instead of replacing
+them at runtime.
+
+@subsection interrupt_notes_index Vector Table Indexing
+External IRQ numbers begin at vector-table slot 16 because slots 0 through 15
+are reserved for core handlers such as reset, fault, and system exceptions.
+
+@subsection interrupt_notes_nested Nested Global Masking
+`INT_SYS_DisableIRQGlobal()` increments an internal counter every time it is
+called. `INT_SYS_EnableIRQGlobal()` only executes `__enable_irq()` after the
+counter returns to zero, so calls must stay balanced.
+
+@subsection interrupt_notes_features Device Variations
+Pending-state, active-state, software-trigger, and multi-core APIs are all
+feature-gated. Check the selected device `<device>_features.h` header before
+relying on those helpers in portable code.
+
+@section interrupt_integration Integration Guide
+
+@subsection interrupt_integration_files Compilation Units
+The following source file must be added to the project build:
+@verbatim
+${SDK_PATH}/platform/drivers/src/interrupt/interrupt_manager.c
+@endverbatim
+
+@subsection interrupt_integration_include Include Paths
+Add the following directory to the toolchain include path:
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+@endverbatim
+
+@subsection interrupt_integration_symbols Compile Symbols
+No special compile-time symbols are required for basic IRQ control. Runtime
+handler installation depends on the vector-table copy strategy selected by the
+startup code and linker configuration.
+
+@subsection interrupt_integration_deps Dependencies
+- Device startup code must provide the active vector table and the default ISR
+  entries.
+- `device_registers.h` must resolve to the selected device header so the
+  correct `IRQn_Type` values and feature macros are available.
+
+*/

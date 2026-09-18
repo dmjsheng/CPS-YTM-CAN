@@ -1,0 +1,26 @@
+# Build output & Intermediate files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+*.obj
+*.o
+*.d
+*.elf
+*.map
+*.a
+
+# IDE & Editor files
+.vscode/
+.idea/
+.cache/
+*.swp
+*.bak
+*~
+
+# Keep compiled Hex and Binary firmware for easy one-click testing!
+!*.hex
+!*.bin

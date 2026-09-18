@@ -1,0 +1,413 @@
+/*!
+@defgroup dma_driver
+@ingroup mod_system Direct Memory Access (DMA)
+@brief Hardware DMA engine driver for the YTMicro SDK.
+
+@details
+The DMA module provides a multi-channel direct memory access engine that
+performs complex data transfers with minimal CPU intervention. The driver
+abstracts the DMA hardware into a virtual channel model, supporting
+single-block, multi-block, loop, and ram-reload (scatter-gather) transfer
+modes.
+
+@section dma_features Key Features
+- Memory-to-memory, peripheral-to-memory, memory-to-peripheral, and
+  peripheral-to-peripheral transfer types.
+- **Single-block transfer** — one contiguous buffer transferred in a single
+  DMA request.
+- **Multi-block transfer** — a buffer divided into blocks, each transferred
+  upon a separate DMA request.
+- **Loop transfer** — configurable transfer/trigger loop counts with
+  source/destination address offsets and channel linking.
+- **Ram reload (scatter-gather)** — automatic CTS descriptor chaining for
+  complex multi-segment transfers.
+- Dynamic virtual channel allocation across multiple DMA instances.
+- Per-channel callback on transfer completion or error.
+- Configurable address modulo for circular buffer support.
+- Transfer sizes from 1 byte to 64 bytes per read/write.
+- Half-complete and full-complete interrupt support.
+- Optional ECC error detection (device-dependent).
+
+@section dma_arch Module Architecture
+
+@verbatim
+┌──────────────────────────────────────────────────┐
+│               Application Code                   │
+│          (calls DMA_DRV_* functions)             │
+├──────────────────────────────────────────────────┤
+│       DMA Driver Layer (dma_driver.h/c)          │
+│  ● Virtual-channel-based API                     │
+│  ● Transfer configuration helpers                │
+│  ● Channel lifecycle (init / release / start)    │
+│  ● Callback management                           │
+├──────────────────────────────────────────────────┤
+│    DMA HW Access Layer (dma_hw_access.h/c)       │
+│  ● Direct register-level CTS manipulation        │
+│  ● Module control (halt, cancel, error flags)    │
+│  ● Mostly inline functions for performance       │
+├──────────────────────────────────────────────────┤
+│       DMA IRQ Layer (dma_irq.h/c)                │
+│  ● Interrupt vector routing per platform         │
+│  ● Dispatches to DMA_DRV_IRQHandler()            │
+├──────────────────────────────────────────────────┤
+│          DMA / DMAMUX Peripheral Hardware        │
+│     (CTRL, CTS[], CHMUX[], status registers)     │
+└──────────────────────────────────────────────────┘
+@endverbatim
+
+@subsection dma_arch_driver Driver Layer (dma_driver.h)
+Application code should **only** use the `DMA_DRV_*` functions. These accept
+a zero-based **virtual channel** index and internally resolve the DMA instance
+and hardware channel.
+
+@subsection dma_arch_hw HW Access Layer (dma_hw_access.h)
+Internal layer providing low-level register accessors, organized into groups:
+- **Module Initialization** — DMA_Init(), DMA_CancelTransfer(), DMA_SetHaltOnErrorCmd()
+- **Module Configuration & Control** — DMA_SetTransferLoopMappingCmd(), DMA_SetDmaRequestCmd(), interrupt flags
+- **CTS Source Configuration** — DMA_CTSSetSrcAddr(), DMA_CTSSetSrcOffset(), modulo, transfer size
+- **CTS Destination Configuration** — DMA_CTSSetDestAddr(), DMA_CTSSetDestOffset(), etc.
+- **CTS Transfer Loop & Trigger** — DMA_CTSSetNbytes(), DMA_CTSSetTriggerCount(), channel linking
+- **CTS Ram Reload & Interrupt** — DMA_CTSSetRamReloadLink(), half/full complete interrupts
+- **DMAMUX** — DMAMUX_Init(), DMAMUX_SetChannelSource()
+
+@section dma_config Configuration Parameters
+
+@subsection dma_config_user dma_user_config_t Fields
+| Field              | Type   | Description                                                                  |
+|--------------------|--------|------------------------------------------------------------------------------|
+| haltOnError        | bool   | If true, any error sets HALT — all subsequent requests are ignored until cleared. |
+| eccErrorEnable     | bool   | Enable ECC error detection (only when `FEATURE_DMA_SUPPORT_ECC_ERROR_CHECK == 1`). |
+| maxChannelForChLink| bool   | Enable errata E406002 workaround using the last channel for link clearing.   |
+
+@subsection dma_config_channel dma_channel_config_t Fields
+| Field           | Type                  | Description                                              |
+|-----------------|-----------------------|----------------------------------------------------------|
+| virtChnConfig   | uint8_t               | Virtual channel number to allocate.                      |
+| source          | dma_request_source_t  | Peripheral DMA request source routed through DMAMUX.     |
+| callback        | dma_callback_t        | User callback invoked on transfer complete or error.     |
+| callbackParam   | void *                | Opaque parameter passed to the callback.                 |
+
+@subsection dma_config_transfer dma_transfer_config_t Fields
+| Field                   | Type                          | Description                                                         |
+|-------------------------|-------------------------------|---------------------------------------------------------------------|
+| srcAddr                 | uint32_t                      | Source start address.                                               |
+| destAddr                | uint32_t                      | Destination start address.                                          |
+| srcTransferSize         | dma_transfer_size_t           | Source read size per bus access (1/2/4/8/16/32/64 bytes).           |
+| destTransferSize        | dma_transfer_size_t           | Destination write size per bus access.                              |
+| srcOffset               | int16_t                       | Signed offset added to source address after each read.              |
+| destOffset              | int16_t                       | Signed offset added to destination address after each write.        |
+| srcLastAddrAdjust       | int32_t                       | Source address adjustment at trigger loop completion.                |
+| destLastAddrAdjust      | int32_t                       | Destination address adjustment at trigger loop completion.           |
+| srcModulo               | dma_modulo_t                  | Source address modulo (circular buffer mask, `DMA_MODULO_OFF` = disabled). |
+| destModulo              | dma_modulo_t                  | Destination address modulo.                                         |
+| transferLoopByteCount   | uint32_t                      | Bytes transferred per DMA request (transfer loop count).            |
+| ramReloadEnable         | bool                          | Enable ram reload (scatter-gather) for this descriptor.             |
+| ramReloadNextDescAddr   | uint32_t                      | Address of next CTS descriptor (must be 32-byte aligned).           |
+| interruptEnable         | bool                          | Generate interrupt when trigger loop count reaches zero.            |
+| loopTransferConfig      | dma_loop_transfer_config_t *  | Pointer to loop configuration (NULL if not using loop mode).        |
+
+@subsection dma_config_loop dma_loop_transfer_config_t Fields
+| Field                       | Type     | Description                                                        |
+|-----------------------------|----------|--------------------------------------------------------------------|
+| triggerLoopIterationCount   | uint32_t | Number of trigger loop (major) iterations.                         |
+| srcOffsetEnable             | bool     | Apply transfer loop offset to source address on loop completion.   |
+| dstOffsetEnable             | bool     | Apply transfer loop offset to destination address on loop completion.|
+| triggerLoopOffset           | int32_t  | Signed offset applied to src/dest after transfer loop completes.   |
+| transferLoopChnLinkEnable   | bool     | Enable channel linking on transfer loop (minor) completion.        |
+| transferLoopChnLinkNumber   | uint8_t  | Channel number linked on transfer loop completion.                 |
+| triggerLoopChnLinkEnable    | bool     | Enable channel linking on trigger loop (major) completion.         |
+| triggerLoopChnLinkNumber    | uint8_t  | Channel number linked on trigger loop completion.                  |
+
+@subsection dma_config_features Device Feature Macros
+| Macro                                   | Description                                             |
+|-----------------------------------------|---------------------------------------------------------|
+| FEATURE_DMA_CHANNELS                    | Number of hardware channels per DMA instance.           |
+| FEATURE_DMA_VIRTUAL_CHANNELS            | Total virtual channels across all DMA instances.        |
+| FEATURE_DMA_SUPPORT_ECC_ERROR_CHECK     | Set to 1 if ECC error detection is available.           |
+| FEATURE_DMA_ERRATA_E406002              | Set to 1 if errata workaround is needed.                |
+| FEATURE_DMA_ENGINE_STALL               | Defined if DMA engine stall cycles are configurable.    |
+| FEATURE_DMAMUX_AVAILABLE                | Defined if DMAMUX peripheral is present.                |
+
+@section dma_usage Usage Patterns
+
+@subsection dma_usage_single Pattern 1: Single-Block Memory-to-Memory Transfer
+Transfer a contiguous buffer between two memory locations in a single DMA
+request.
+
+@code{.c}
+#define DMA_VIRT_CHN  (0U)
+
+dma_state_t dmaState;
+dma_chn_state_t chnState;
+dma_chn_state_t *chnStateArray[] = { &chnState };
+
+dma_channel_config_t chnConfig = {
+    .virtChnConfig = DMA_VIRT_CHN,
+    .source        = DMA_REQ_DISABLED,
+    .callback      = dmaCallback,
+    .callbackParam = NULL
+};
+const dma_channel_config_t *chnConfigArray[] = { &chnConfig };
+
+dma_user_config_t userConfig = {
+    .haltOnError = false
+};
+
+uint8_t srcBuffer[256];
+uint8_t destBuffer[256];
+
+/* Step 1: Initialize DMA module and channel */
+DMA_DRV_Init(&dmaState, &userConfig, chnStateArray, chnConfigArray, 1U);
+
+/* Step 2: Configure single-block transfer (M->M, 4 bytes per access, 256 bytes total) */
+DMA_DRV_ConfigSingleBlockTransfer(DMA_VIRT_CHN, DMA_TRANSFER_MEM2MEM,
+                                   (uint32_t)srcBuffer, (uint32_t)destBuffer,
+                                   DMA_TRANSFER_SIZE_4B, sizeof(srcBuffer));
+
+/* Step 3: Start channel — transfer begins on first DMA request */
+DMA_DRV_StartChannel(DMA_VIRT_CHN);
+
+/* Step 4: Trigger a software request to start immediately */
+DMA_DRV_TriggerSwRequest(DMA_VIRT_CHN);
+
+/* Transfer complete callback will fire when done */
+@endcode
+
+@subsection dma_usage_multi Pattern 2: Multi-Block Peripheral-to-Memory Transfer
+Receive data from a peripheral register (e.g., UART RX) in multiple blocks,
+one block per DMA request.
+
+@code{.c}
+#define DMA_VIRT_CHN  (1U)
+#define UART_RX_DATA  (0x4006A00CU)  /* Example UART data register address */
+
+uint8_t rxBuffer[64];
+
+/* After DMA_DRV_Init() and DMA_DRV_ChannelInit()... */
+
+/* Configure: P->M, 1 byte per access, 8 bytes per block, 8 blocks, disable request on completion */
+DMA_DRV_ConfigMultiBlockTransfer(DMA_VIRT_CHN, DMA_TRANSFER_PERIPH2MEM,
+                                  UART_RX_DATA, (uint32_t)rxBuffer,
+                                  DMA_TRANSFER_SIZE_1B,
+                                  8U,   /* blockSize: 8 bytes per request */
+                                  8U,   /* blockCount: 8 blocks = 64 bytes total */
+                                  true); /* disable request after completion */
+
+DMA_DRV_StartChannel(DMA_VIRT_CHN);
+/* Each UART RX request transfers 8 bytes; after 8 requests, callback fires */
+@endcode
+
+@subsection dma_usage_loop Pattern 3: Loop Transfer with Address Offsets
+Use transfer/trigger loop configuration for advanced addressing, such as
+transferring rows of a matrix with a stride.
+
+@code{.c}
+#define DMA_VIRT_CHN  (2U)
+
+dma_loop_transfer_config_t loopConfig = {
+    .triggerLoopIterationCount = 4U,        /* 4 trigger loop iterations */
+    .srcOffsetEnable           = false,
+    .dstOffsetEnable           = false,
+    .triggerLoopOffset         = 0,
+    .transferLoopChnLinkEnable = false,
+    .transferLoopChnLinkNumber = 0U,
+    .triggerLoopChnLinkEnable  = false,
+    .triggerLoopChnLinkNumber  = 0U
+};
+
+dma_transfer_config_t transferConfig = {
+    .srcAddr                = (uint32_t)srcData,
+    .destAddr               = (uint32_t)destData,
+    .srcTransferSize        = DMA_TRANSFER_SIZE_4B,
+    .destTransferSize       = DMA_TRANSFER_SIZE_4B,
+    .srcOffset              = 4,
+    .destOffset             = 4,
+    .srcLastAddrAdjust      = -16,  /* Reset source back to start after 4 words */
+    .destLastAddrAdjust     = 0,
+    .srcModulo              = DMA_MODULO_OFF,
+    .destModulo             = DMA_MODULO_OFF,
+    .transferLoopByteCount  = 16U,  /* 16 bytes per request */
+    .ramReloadEnable        = false,
+    .ramReloadNextDescAddr  = 0U,
+    .interruptEnable        = true,
+    .loopTransferConfig     = &loopConfig
+};
+
+/* After DMA_DRV_Init() and DMA_DRV_ChannelInit()... */
+DMA_DRV_ConfigLoopTransfer(DMA_VIRT_CHN, &transferConfig);
+DMA_DRV_StartChannel(DMA_VIRT_CHN);
+@endcode
+
+@subsection dma_usage_ramreload Pattern 4: Ram Reload (Scatter-Gather) Transfer Chain
+Chain multiple transfer descriptors together. Each descriptor is automatically
+loaded from RAM when the previous one completes.
+
+@code{.c}
+#define DMA_VIRT_CHN  (3U)
+#define CTS_COUNT     (3U)
+
+uint8_t sctsBuffer[SCTS_SIZE(CTS_COUNT)];
+uint8_t src1[32], src2[32], src3[32];
+uint8_t dest1[32], dest2[32], dest3[32];
+
+dma_ram_reload_list_t srcList[CTS_COUNT] = {
+    { .address = (uint32_t)src1, .length = 32U, .type = DMA_TRANSFER_MEM2MEM },
+    { .address = (uint32_t)src2, .length = 32U, .type = DMA_TRANSFER_MEM2MEM },
+    { .address = (uint32_t)src3, .length = 32U, .type = DMA_TRANSFER_MEM2MEM }
+};
+dma_ram_reload_list_t destList[CTS_COUNT] = {
+    { .address = (uint32_t)dest1, .length = 32U, .type = DMA_TRANSFER_MEM2MEM },
+    { .address = (uint32_t)dest2, .length = 32U, .type = DMA_TRANSFER_MEM2MEM },
+    { .address = (uint32_t)dest3, .length = 32U, .type = DMA_TRANSFER_MEM2MEM }
+};
+
+/* After DMA_DRV_Init() and DMA_DRV_ChannelInit()... */
+DMA_DRV_ConfigRamReloadTransfer(DMA_VIRT_CHN,
+                                 (dma_software_cts_t *)sctsBuffer,
+                                 DMA_TRANSFER_SIZE_4B,
+                                 32U,       /* bytesOnEachRequest */
+                                 srcList, destList, CTS_COUNT);
+DMA_DRV_StartChannel(DMA_VIRT_CHN);
+DMA_DRV_TriggerSwRequest(DMA_VIRT_CHN);
+/* After each trigger completes, the next CTS is loaded automatically.
+   Callback fires only after the last CTS completes. */
+@endcode
+
+@section dma_api API Quick Reference
+
+@subsection dma_api_init Initialization & De-initialization
+| Function              | Description                                                     |
+|-----------------------|-----------------------------------------------------------------|
+| DMA_DRV_Init()        | Initialize DMA module, state structure, and optional channels.  |
+| DMA_DRV_Deinit()      | De-initialize DMA module and release all channels.              |
+
+@subsection dma_api_chn Channel Management
+| Function                  | Description                                                 |
+|---------------------------|-------------------------------------------------------------|
+| DMA_DRV_ChannelInit()     | Initialize a virtual channel (allocate, set source, callback). |
+| DMA_DRV_ReleaseChannel()  | Release a virtual channel and free its resources.           |
+
+@subsection dma_api_config Transfer Configuration
+| Function                            | Description                                                  |
+|-------------------------------------|--------------------------------------------------------------|
+| DMA_DRV_ConfigSingleBlockTransfer() | Configure a single contiguous block transfer.                |
+| DMA_DRV_ConfigMultiBlockTransfer()  | Configure a multi-block transfer with trigger loop.          |
+| DMA_DRV_ConfigLoopTransfer()        | Configure transfer with full loop control (offsets, linking).|
+| DMA_DRV_ConfigRamReloadTransfer()   | Configure a ram reload (scatter-gather) descriptor chain.    |
+| DMA_DRV_PushConfigToReg()           | Copy a transfer config structure to CTS hardware registers.  |
+| DMA_DRV_PushConfigToSCTS()          | Copy a transfer config structure to a software CTS in RAM.   |
+| DMA_DRV_CancelTransfer()            | Cancel the currently executing transfer.                     |
+
+@subsection dma_api_ctrl Channel Control
+| Function                                | Description                                              |
+|-----------------------------------------|----------------------------------------------------------|
+| DMA_DRV_StartChannel()                  | Enable DMA requests for the virtual channel.             |
+| DMA_DRV_StopChannel()                   | Disable DMA requests for the virtual channel.            |
+| DMA_DRV_SetChannelRequestAndTrigger()   | Configure the DMAMUX request source for a channel.       |
+| DMA_DRV_ClearCTS()                      | Clear all CTS registers to zero for a channel.           |
+| DMA_DRV_TriggerSwRequest()              | Trigger a software DMA request on a channel.             |
+
+@subsection dma_api_src Source Address Configuration
+| Function                            | Description                                              |
+|-------------------------------------|----------------------------------------------------------|
+| DMA_DRV_SetSrcAddr()               | Set source address for a channel CTS.                    |
+| DMA_DRV_SetSrcOffset()             | Set signed source address offset per read.               |
+| DMA_DRV_SetSrcReadChunkSize()      | Set source data read size (1/2/4/8/16/32 bytes).         |
+| DMA_DRV_SetSrcLastAddrAdjustment() | Set source address adjustment at trigger loop completion. |
+
+@subsection dma_api_dest Destination Address Configuration
+| Function                             | Description                                               |
+|--------------------------------------|-----------------------------------------------------------|
+| DMA_DRV_SetDestAddr()                | Set destination address for a channel CTS.                |
+| DMA_DRV_SetDestOffset()              | Set signed destination address offset per write.          |
+| DMA_DRV_SetDestWriteChunkSize()      | Set destination data write size (1/2/4/8/16/32 bytes).    |
+| DMA_DRV_SetDestLastAddrAdjustment()  | Set destination address adjustment at trigger loop completion. |
+
+@subsection dma_api_loop Transfer Loop Configuration
+| Function                                     | Description                                                |
+|----------------------------------------------|------------------------------------------------------------|
+| DMA_DRV_SetTransferLoopBlockSize()           | Set bytes transferred per DMA request (transfer loop).     |
+| DMA_DRV_SetTriggerLoopIterationCount()       | Set number of trigger loop (major) iterations.             |
+| DMA_DRV_GetRemainingTriggerIterationsCount() | Get remaining trigger loop iterations.                     |
+| DMA_DRV_SetRamReloadLink()                   | Set next CTS descriptor address for ram reload.            |
+| DMA_DRV_DisableRequestsOnTransferComplete()  | Disable or enable requests after trigger loop completion.  |
+
+@subsection dma_api_int Interrupt & Callback
+| Function                      | Description                                                   |
+|-------------------------------|---------------------------------------------------------------|
+| DMA_DRV_ConfigureInterrupt()  | Enable/disable error, half-complete, or complete interrupts.  |
+| DMA_DRV_InstallCallback()     | Register or unregister a callback for a virtual channel.      |
+
+@subsection dma_api_status Status
+| Function                    | Description                          |
+|-----------------------------|--------------------------------------|
+| DMA_DRV_GetChannelStatus()  | Get current status of a DMA channel. |
+
+@section dma_notes Important Notes
+
+@subsection dma_notes_clock Clock Dependency
+The DMA peripheral clock must be enabled via the @ref clock_manager **before**
+calling DMA_DRV_Init(). The driver does not manage clocks internally.
+
+@subsection dma_notes_vchan Virtual Channel Mapping
+Virtual channels map linearly across DMA instances. If a device has 2 DMA
+modules with 32 channels each, virtual channels 0-31 map to DMA0 and 32-63
+map to DMA1. Use virtual channel numbers consistently across all driver API
+calls.
+
+@subsection dma_notes_alignment Address Alignment
+- Source and destination addresses **must** be aligned to the transfer size.
+  For example, a 4-byte transfer requires 4-byte-aligned addresses.
+- Ram reload CTS descriptors **must** be 32-byte aligned. Use the SCTS_SIZE()
+  and SCTS_ADDR() macros to allocate and align properly.
+
+@subsection dma_notes_modulo Modulo (Circular Buffer) Usage
+When using the modulo feature, the application must ensure the buffer start
+address is aligned to a power-of-2 boundary equal to the modulo size. The
+modulo value freezes the upper address bits, creating a circular address
+range.
+
+@warning Misaligned modulo buffers produce undefined transfer results.
+
+@subsection dma_notes_periph Peripheral Transfer Size Constraint
+For peripheral-to-memory or memory-to-peripheral transfers, the transfer
+size **must** match the peripheral data register width:
+- 8-bit data register: use `DMA_TRANSFER_SIZE_1B`.
+- 32-bit data register: use `DMA_TRANSFER_SIZE_4B`.
+
+@warning Using a mismatched transfer size causes truncated data transfers.
+
+@note In L/Z series devices, `DMA_TRANSFER_SIZE_16B` and
+`DMA_TRANSFER_SIZE_32B` are **not** supported.
+
+@subsection dma_notes_irq Interrupt Priority
+The driver enables DMA channel and error interrupts internally, but does
+**not** configure interrupt priorities. The application must set appropriate
+priorities using the interrupt manager.
+
+@section dma_integration Integration Guide
+
+@subsection dma_integration_files Compilation Units
+The following source files must be added to the project build:
+@verbatim
+${SDK_PATH}/platform/drivers/src/dma/dma_driver.c
+${SDK_PATH}/platform/drivers/src/dma/dma_hw_access.c
+${SDK_PATH}/platform/drivers/src/dma/dma_irq.c
+@endverbatim
+
+@subsection dma_integration_include Include Paths
+Add the following directory to the toolchain include path:
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+@endverbatim
+
+@subsection dma_integration_symbols Compile Symbols
+No special compile-time symbols are required. Device-specific feature macros
+(`FEATURE_DMA_*`, `FEATURE_DMAMUX_*`) are defined automatically in the
+device features header.
+
+@subsection dma_integration_deps Dependencies
+- @ref clock_manager — Required for enabling the DMA peripheral clock.
+- @ref interrupt_manager — Required for enabling DMA channel interrupts.
+
+*/

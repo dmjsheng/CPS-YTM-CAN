@@ -1,0 +1,354 @@
+/*!
+@defgroup pins
+@ingroup mod_system Pins Driver (PINS)
+@brief Pin mux, GPIO, and pin interrupt configuration module for the YTMicro SDK.
+
+@details
+The PINS module provides a unified software interface for configuring pad mux
+selection, electrical pad attributes, GPIO direction and data state, and
+per-pin interrupt or DMA trigger routing. It is the standard driver used by
+board-level `pin_mux.c` files generated for YTMicro SDK demos and applications.
+
+@section pins_features Key Features
+- Configure one or more pins from `pin_settings_config_t` records with a
+  single `PINS_DRV_Init()` call.
+- Select pad mux routing between analog mode, GPIO, and device-specific
+  alternate functions.
+- Configure GPIO direction, initial output value, and runtime GPIO read/write
+  operations.
+- Configure per-pin interrupt or DMA trigger behavior through
+  `gpio_interrupt_config_t`.
+- Support optional digital input filtering where the target device implements
+  GPIO-side or PCTRL-side filter hardware.
+- Support optional pad electrical attributes such as pull selection, open
+  drain, drive strength, slew rate, passive input filtering, and pin lock
+  through device feature macros.
+
+@section pins_modes Supported Modes
+
+The following table summarizes the major configuration domains exposed by the
+PINS driver:
+
+| Capability | Primary API / Field | Availability |
+|------------|---------------------|--------------|
+| Pin mux selection | `pin_settings_config_t::mux`, `PINS_DRV_SetMuxModeSel()` | Always available |
+| GPIO direction and output init | `pin_settings_config_t::direction`, `pin_settings_config_t::initValue`, `PINS_DRV_SetPinDirection()` | Always available |
+| GPIO read/write access | `PINS_DRV_WritePin()`, `PINS_DRV_WritePins()`, `PINS_DRV_ReadPin()`, `PINS_DRV_ReadPins()` | Always available |
+| Pin interrupt / DMA trigger | `pin_settings_config_t::intConfig`, `PINS_DRV_SetPinIntSel()` | Always available |
+| Internal pull resistor | `pin_settings_config_t::pullConfig`, `PINS_DRV_SetPullSel()` | `FEATURE_PINS_HAS_PULL_SELECTION` |
+| Open drain output | `pin_settings_config_t::openDrain` | `FEATURE_PINS_HAS_OPEN_DRAIN` |
+| Drive strength | `pin_settings_config_t::driveSelect` | `FEATURE_PINS_HAS_DRIVE_STRENGTH` |
+| Slew rate | `pin_settings_config_t::rateSelect` | `FEATURE_PINS_HAS_SLEW_RATE` |
+| Passive input filter | `pin_settings_config_t::passiveFilter` | `FEATURE_PINS_HAS_PASSIVE_FILTER` |
+| Digital input filter | `pin_settings_config_t::digitalFilter`, `pin_settings_config_t::filterConfig`, `PINS_DRV_ConfigDigitalFilter()` | `FEATURE_PINS_HAS_DIGITAL_FILTER` or `FEATURE_PCTRL_HAS_DIGITAL_FILTER` |
+| Input disable | `PINS_DRV_SetPortInputDisable()` | `FEATURE_PINS_HAS_INPUT_DISABLE` |
+| Pin control lock | `pin_settings_config_t::pinLock` | `FEATURE_PCTRL_HAS_PIN_CONTROL_LOCK` |
+
+@section pins_arch Module Architecture
+
+The PINS module uses a layered structure that separates the public driver API
+from the low-level register access helpers:
+
+@verbatim
+┌──────────────────────────────────────────────┐
+│              Application Code                │
+│     (board pin_mux.c, drivers, user code)    │
+├──────────────────────────────────────────────┤
+│         PINS Driver Layer (pins_driver.h/c)  │
+│  ● Public PINS_DRV_* API                     │
+│  ● Batch pin initialization                  │
+│  ● GPIO, interrupt, and mux helper wrappers  │
+├──────────────────────────────────────────────┤
+│   PCTRL HW Access (pins_port_hw_access.h/c)  │
+│  ● Complete pin record application           │
+│  ● Pull selection and mux programming        │
+├──────────────────────────────────────────────┤
+│   GPIO HW Access (pins_gpio_hw_access.h)     │
+│  ● Inline GPIO direction and data access     │
+│  ● Interrupt flag / digital filter control   │
+├──────────────────────────────────────────────┤
+│         PCTRL and GPIO Peripheral Registers  │
+└──────────────────────────────────────────────┘
+@endverbatim
+
+@subsection pins_arch_driver Driver Layer (pins_driver.h)
+Application code should use the `PINS_DRV_*` functions declared in
+`pins_driver.h`. This layer provides the stable SDK-facing API used by board
+initialization code and application logic.
+
+@subsection pins_arch_port PCTRL Access Layer (pins_port_hw_access.h/c)
+This internal layer applies complete `pin_settings_config_t` records, including
+PCR fields, GPIO direction setup, optional digital filter programming, and pin
+lock control.
+
+@subsection pins_arch_gpio GPIO Access Layer (pins_gpio_hw_access.h)
+This header-only layer exposes inline helpers for GPIO direction, GPIO data,
+per-pin interrupt selection, interrupt flags, and optional digital filters.
+
+@section pins_config Configuration Parameters
+
+@subsection pins_config_record pin_settings_config_t Fields
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `base` | `PCTRL_Type *` | PCTRL instance that owns the pin control register. | User supplied |
+| `pinPortIdx` | `uint32_t` | Zero-based pin index within the selected port. | User supplied |
+| `pullConfig` | `port_pull_config_t` | Internal pull resistor selection. | User supplied when available |
+| `rateSelect` | `port_slew_rate_t` | Slew rate selection. | User supplied when available |
+| `passiveFilter` | `bool` | Passive input filter enable state. | User supplied when available |
+| `openDrain` | `port_open_drain_t` | Open-drain output enable state. | User supplied when available |
+| `driveSelect` | `port_drive_strength_t` | Output drive strength selection. | User supplied when available |
+| `mux` | `port_mux_t` | Pad mux selection written into PCR.MUX. | User supplied |
+| `pinLock` | `bool` | Lock PCR contents after configuration. | User supplied when available |
+| `intConfig` | `gpio_interrupt_config_t` | Interrupt or DMA trigger mode for the pin. | User supplied |
+| `clearIntFlag` | `bool` | Clear the pin interrupt flag after programming the registers. | User supplied |
+| `digitalFilter` | `bool` | Enable the digital filter after setup. | User supplied |
+| `filterConfig` | `gpio_digital_filter_config_t` | Digital filter width and optional filter clock source. | User supplied when available |
+| `gpioBase` | `GPIO_Type *` | GPIO instance associated with the same pin. | User supplied |
+| `direction` | `pin_direction_t` | GPIO direction when `mux == PCTRL_MUX_AS_GPIO`. | User supplied |
+| `initValue` | `pins_level_type_t` | Initial GPIO output value written before output enable. | User supplied |
+
+@subsection pins_config_filter gpio_digital_filter_config_t Fields
+| Field | Type | Description | Default |
+|-------|------|-------------|---------|
+| `clock` | `port_digital_filter_clock_t` | Digital filter clock source. | User supplied when available |
+| `width` | `uint8_t` | Width value programmed into the digital filter. | User supplied |
+
+@subsection pins_config_features Device Feature Macros
+| Macro | Description |
+|-------|-------------|
+| `FEATURE_PINS_HAS_PULL_SELECTION` | Enables internal pull resistor configuration fields and APIs. |
+| `FEATURE_PINS_HAS_OPEN_DRAIN` | Enables open-drain configuration support. |
+| `FEATURE_PINS_HAS_DRIVE_STRENGTH` | Enables drive-strength configuration support. |
+| `FEATURE_PINS_HAS_SLEW_RATE` | Enables slew-rate configuration support. |
+| `FEATURE_PINS_HAS_PASSIVE_FILTER` | Enables passive input filter support. |
+| `FEATURE_PINS_HAS_FLAG_SET_ONLY` | Adds flag-only interrupt encodings to `gpio_interrupt_config_t`. |
+| `FEATURE_PINS_HAS_TRIGGER_OUT` | Adds trigger-out encodings to `gpio_interrupt_config_t`. |
+| `FEATURE_PINS_HAS_INPUT_DISABLE` | Enables GPIO input-disable APIs. |
+| `FEATURE_PINS_HAS_DIGITAL_FILTER` | Indicates the digital filter is implemented on the GPIO side. |
+| `FEATURE_PCTRL_HAS_DIGITAL_FILTER` | Indicates the digital filter is implemented on the PCTRL side. |
+| `FEATURE_PINS_HAS_FILTER_CLOCK_SELECTION` | Enables digital-filter clock source selection. |
+| `FEATURE_PCTRL_HAS_PIN_CONTROL_LOCK` | Enables pin control register lock support. |
+| `FEATURE_PCTRL_HAS_ALT_15` | Extends the mux enumeration with alternate functions 8 through 15. |
+
+@section pins_usage Usage Patterns
+
+@subsection pins_usage_gpio Pattern 1: Initialize a GPIO Output Pin
+Use a single configuration record to route a pad to GPIO mode, set its output
+direction, and program the initial level:
+
+@code{.c}
+pin_settings_config_t ledPin = {
+    .base = PCTRLC,
+    .pinPortIdx = 8U,
+    .mux = PCTRL_MUX_AS_GPIO,
+    .intConfig = PCTRL_DMA_INT_DISABLED,
+    .clearIntFlag = false,
+    .digitalFilter = false,
+    .gpioBase = GPIOC,
+    .direction = GPIO_OUTPUT_DIRECTION,
+    .initValue = 0U
+};
+
+PINS_DRV_Init(1U, &ledPin);
+PINS_DRV_SetPins(GPIOC, 1UL << 8U);
+PINS_DRV_ClearPins(GPIOC, 1UL << 8U);
+@endcode
+
+@subsection pins_usage_alt Pattern 2: Configure Peripheral Alternate Functions
+Multiple pins can be initialized in one call when a peripheral requires more
+than one muxed pad:
+
+@code{.c}
+pin_settings_config_t uartPins[2] = {
+    {
+        .base = PCTRLC,
+        .pinPortIdx = 8U,
+        .mux = PCTRL_MUX_ALT2,
+        .intConfig = PCTRL_DMA_INT_DISABLED,
+        .clearIntFlag = false,
+        .digitalFilter = false,
+        .gpioBase = GPIOC,
+        .direction = GPIO_UNSPECIFIED_DIRECTION,
+        .initValue = 0U
+    },
+    {
+        .base = PCTRLC,
+        .pinPortIdx = 9U,
+        .mux = PCTRL_MUX_ALT2,
+        .intConfig = PCTRL_DMA_INT_DISABLED,
+        .clearIntFlag = false,
+        .digitalFilter = false,
+        .gpioBase = GPIOC,
+        .direction = GPIO_UNSPECIFIED_DIRECTION,
+        .initValue = 0U
+    }
+};
+
+PINS_DRV_Init(2U, uartPins);
+@endcode
+
+@subsection pins_usage_irq Pattern 3: Configure a GPIO Input with Interrupt Handling
+Configure a pin as a GPIO input, select a rising-edge interrupt, and service
+the interrupt flag in software:
+
+@code{.c}
+pin_settings_config_t buttonPin = {
+    .base = PCTRLA,
+    .pinPortIdx = 3U,
+    .mux = PCTRL_MUX_AS_GPIO,
+    .intConfig = PCTRL_INT_RISING_EDGE,
+    .clearIntFlag = true,
+    .digitalFilter = false,
+    .gpioBase = GPIOA,
+    .direction = GPIO_INPUT_DIRECTION,
+    .initValue = 0U
+};
+
+PINS_DRV_Init(1U, &buttonPin);
+
+if ((PINS_DRV_GetPortIntFlag(GPIOA) & (1UL << 3U)) != 0U)
+{
+    PINS_DRV_ClearPinIntFlagCmd(GPIOA, 3U);
+}
+@endcode
+
+@subsection pins_usage_filter Pattern 4: Program the Optional Digital Filter
+When the target device supports a pin digital filter, program the filter width
+before enabling it:
+
+@code{.c}
+#if (FEATURE_PINS_HAS_DIGITAL_FILTER) || (FEATURE_PCTRL_HAS_DIGITAL_FILTER)
+gpio_digital_filter_config_t filterConfig = {
+#if defined(FEATURE_PINS_HAS_FILTER_CLOCK_SELECTION) && (FEATURE_PINS_HAS_FILTER_CLOCK_SELECTION == 1)
+    .clock = PCTRL_DIGITAL_FILTER_BUS_CLOCK,
+#endif
+    .width = 3U
+};
+#endif
+
+pin_settings_config_t filteredInput = {
+    .base = PCTRLB,
+    .pinPortIdx = 5U,
+    .mux = PCTRL_MUX_AS_GPIO,
+    .intConfig = PCTRL_INT_EITHER_EDGE,
+    .clearIntFlag = true,
+    .digitalFilter = true,
+#if (FEATURE_PINS_HAS_DIGITAL_FILTER) || (FEATURE_PCTRL_HAS_DIGITAL_FILTER)
+    .filterConfig = filterConfig,
+#endif
+    .gpioBase = GPIOB,
+    .direction = GPIO_INPUT_DIRECTION,
+    .initValue = 0U
+};
+
+PINS_DRV_Init(1U, &filteredInput);
+@endcode
+
+@section pins_api API Quick Reference
+
+@subsection pins_api_init Initialization
+| Function | Description |
+|----------|-------------|
+| `PINS_DRV_Init()` | Apply one or more pin configuration records. |
+
+@subsection pins_api_port Port Control
+| Function | Description |
+|----------|-------------|
+| `PINS_DRV_SetPullSel()` | Configure the internal pull resistor of a pin. |
+| `PINS_DRV_SetMuxModeSel()` | Update the mux selection of a pin. |
+
+@subsection pins_api_irq Interrupt & Digital Filter Control
+| Function | Description |
+|----------|-------------|
+| `PINS_DRV_SetPinIntSel()` | Configure the interrupt or DMA trigger mode of a pin. |
+| `PINS_DRV_GetPinIntSel()` | Read the interrupt or DMA trigger mode of a pin. |
+| `PINS_DRV_ClearPinIntFlagCmd()` | Clear the interrupt status flag of one pin. |
+| `PINS_DRV_EnableDigitalFilter()` | Enable the digital filter for one pin. |
+| `PINS_DRV_DisableDigitalFilter()` | Disable the digital filter for one pin. |
+| `PINS_DRV_ConfigDigitalFilter()` | Program the digital filter settings for one pin. |
+| `PINS_DRV_GetPortIntFlag()` | Read pending interrupt flags for an entire port. |
+| `PINS_DRV_ClearPortIntFlagCmd()` | Clear all pending interrupt flags for a port. |
+
+@subsection pins_api_direction GPIO Direction Control
+| Function | Description |
+|----------|-------------|
+| `PINS_DRV_GetPinsDirection()` | Read the GPIO direction mask of a port. |
+| `PINS_DRV_SetPinDirection()` | Set the direction of one GPIO pin. |
+| `PINS_DRV_SetPinsDirection()` | Set the direction mask of a GPIO port. |
+| `PINS_DRV_SetPortInputDisable()` | Enable or disable the GPIO input path for selected pins. |
+| `PINS_DRV_GetPortInputDisable()` | Read the GPIO input-disable mask of a port. |
+
+@subsection pins_api_data GPIO Data Access
+| Function | Description |
+|----------|-------------|
+| `PINS_DRV_WritePin()` | Write one GPIO pin with a logic level. |
+| `PINS_DRV_WritePins()` | Write the output register of an entire GPIO port. |
+| `PINS_DRV_GetPinsOutput()` | Read the current GPIO output latch value. |
+| `PINS_DRV_SetPins()` | Set selected GPIO pins to logic high. |
+| `PINS_DRV_ClearPins()` | Clear selected GPIO pins to logic low. |
+| `PINS_DRV_TogglePins()` | Toggle selected GPIO pins. |
+| `PINS_DRV_ReadPins()` | Read the sampled GPIO input levels of a port. |
+| `PINS_DRV_ReadPin()` | Read the sampled GPIO input level of one pin. |
+
+@section pins_notes Important Notes
+
+@subsection pins_notes_gpioBase gpioBase Is Required for Full Pin Setup
+`PINS_Init()` programs interrupt control and interrupt flags through the GPIO
+register block even when the pin mux is not configured as GPIO. Each
+`pin_settings_config_t` record therefore needs a valid `gpioBase` pointer that
+matches the selected pad.
+
+@warning Passing an invalid `gpioBase` pointer causes the initialization logic
+to write interrupt and filter fields into the wrong register block.
+
+@subsection pins_notes_direction GPIO Direction Constraints
+When `mux == PCTRL_MUX_AS_GPIO`, the `direction` field must be either
+`GPIO_INPUT_DIRECTION` or `GPIO_OUTPUT_DIRECTION`.
+
+@warning `GPIO_UNSPECIFIED_DIRECTION` is not a valid runtime GPIO direction.
+Using it for a GPIO-configured pin triggers the driver's defensive assert path.
+
+@subsection pins_notes_filter Digital Filter Update Rules
+Digital filter width and optional clock source should be updated only while the
+corresponding filter is disabled.
+
+@note The implementation supports two hardware placement models:
+- `FEATURE_PINS_HAS_DIGITAL_FILTER`: filter bits are owned by the GPIO PCR.
+- `FEATURE_PCTRL_HAS_DIGITAL_FILTER`: filter bits are owned by the PCTRL PCR.
+
+@subsection pins_notes_data GPIO Read and Write Semantics
+- `PINS_DRV_GetPinsOutput()` reads the output latch state, not the sampled pad state.
+- `PINS_DRV_ReadPins()` and `PINS_DRV_ReadPin()` return sampled input values.
+- `PINS_DRV_SetPins()`, `PINS_DRV_ClearPins()`, and `PINS_DRV_TogglePins()`
+  change only the pins selected by the provided bit mask.
+
+@subsection pins_notes_device Device Variation
+Many `pin_settings_config_t` fields are guarded by device feature macros. The
+same source code can therefore expose different optional capabilities depending
+on the selected target device.
+
+@section pins_integration Integration Guide
+
+@subsection pins_integration_files Compilation Units
+Add the following source files to the project build:
+@verbatim
+${SDK_PATH}/platform/drivers/src/pins/pins_driver.c
+${SDK_PATH}/platform/drivers/src/pins/pins_port_hw_access.c
+@endverbatim
+
+@subsection pins_integration_include Include Paths
+Add the following directory to the toolchain include path:
+@verbatim
+${SDK_PATH}/platform/drivers/inc/
+@endverbatim
+
+@subsection pins_integration_symbols Compile Symbols
+No special compile-time symbols are required for this module. The device
+feature macros used by the driver are supplied by the selected device headers.
+
+@subsection pins_integration_deps Dependencies
+- `device_registers.h` — Provides the PCTRL and GPIO register definitions.
+- Device-specific feature headers — Provide the `FEATURE_PINS_*` and
+  `FEATURE_PCTRL_*` capability macros used throughout the module.
+
+*/

@@ -1,0 +1,31 @@
+#ifndef QCONFIG_H
+#define QCONFIG_H
+
+#define Q_QUEUES 0
+#define Q_FSM 0
+#define Q_ATCLI 0
+#define Q_ALLOW_TASK_NAMING 1
+
+#define Q_EDGE_CHECK_IOGROUPS 0
+
+#define Q_TASK_EVENT_FLAGS 0
+
+#define Q_TASK_COUNT_CYCLES 0
+
+#define Q_ALLOW_YIELD_TO_TASK 0
+
+#define Q_TRACE_KERNEL_AND_MODULES 0
+
+#define Q_MEMORY_MANAGER 0
+
+#define Q_RESPONSE_HANDLER 0
+
+#define Q_BYTE_SIZED_BUFFERS 0
+
+#define Q_SETUP_TIME_CANONICAL 0
+
+#define Q_SETUP_TICK_IN_HERTZ 0
+
+#define Q_PRESERVE_TASK_ENTRY_ORDER 0
+
+#endif
