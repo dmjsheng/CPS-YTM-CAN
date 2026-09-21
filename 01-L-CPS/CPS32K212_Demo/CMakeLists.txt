@@ -38,7 +38,7 @@ file(GLOB SOURCES
         RTOS/QuarkTS-7.3.3/*.c
 )
 
-#-fno-elide-constructors 通过参数-fno-elide-constructors关闭g++的编译优�?#__attribute__((optimize（�O0”）)) 让GCC 不�优化程�
+#-fno-elide-constructors 閫氳繃鍙傛暟-fno-elide-constructors鍏抽棴g++鐨勭紪璇戜紭鍖?#__attribute__((optimize锛堚淥0鈥濓級)) 璁〨CC 涓嶈佷紭鍖栫▼搴
 add_compile_options(-Os)#-Os -Ofast -Og
 add_compile_options(-mthumb -march=armv6s-m -mcpu=cortex-m0plus)#-mthumb-interwork
 add_compile_options(-fdata-sections -ffunction-sections -Wextra -Wfatal-errors)
